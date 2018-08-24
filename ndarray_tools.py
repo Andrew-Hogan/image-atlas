@@ -105,7 +105,7 @@ def rotate_image(image, angle):  # This is in limbo - needs to be looked at.
 
     result = cv2.warpAffine(image, M, (nW, nH), flags=cv2.INTER_CUBIC,
                             borderMode=cv2.BORDER_CONSTANT, borderValue=255)
-    result = ndarray_tools.threshold_image(result)  # threshold=threshold
+    result = threshold_image(result)  # threshold=threshold
 
     #minispace = ImageSpace(result)
     #minispace.create_shape_bboxes_and_contained_shape_references()
@@ -113,5 +113,3 @@ def rotate_image(image, angle):  # This is in limbo - needs to be looked at.
     #cropped = relevant_object.create_neural_network_input_for_shape()
     #return cropped
     return result
-
-

@@ -5,6 +5,11 @@ from scipy import ndimage
 import cv2
 
 import ndarray_tools
+import calc_tools
+
+
+_BUILTIN_TABLE = "_appendix"
+MINIMUM_RESEGMENT_PIXELS = 20
 
 
 def quad_neighbor_pixels_from_ndarray(image, *, pixel_class=None):
@@ -126,6 +131,55 @@ def shapes_from_labels(pixels, labeled_image, labels, *args, shape_class=None, s
     ).tolist()
 
 
+def owned_white(shape):
+    return {other_shape for other_shape in shape if shape.color == 1}
+
+
+def owned_black(shape):
+    return {other_shape for other_shape in shape if shape.color == 0}
+
+
+def surrounded_white(shape):
+    return {other_shape for other_shape in shape.inner if shape.color == 1}
+
+
+def surrounded_black(shape):
+    return {other_shape for other_shape in shape.inner if shape.color == 0}
+
+
+def black_or_white(color):
+    if color == 0:
+        return "Black"
+    return "White"
+
+
+def largest_shape_of_set(shapes):
+    if shapes:
+        return max(shapes, key=lambda shape: shape.area)
+    return None
+
+
+def smallest_shape_of_set(shapes):
+    if shapes:
+        return min(shapes, key=lambda shape: shape.area)
+    return None
+
+
+def get_connected_pixels_of_set_from_pixel(init_pixel, pixel_pool_original):
+    pixel_pool = pixel_pool_original.copy()
+    to_check = {init_pixel}
+    connected_pixels = {init_pixel}
+    while to_check:
+        new_pixels = {}
+        for pixel in to_check:
+            pixels = {pixel_neighbor for pixel_neighbor in pixel if pixel_neighbor in pixel_pool}
+            new_pixels.update(pixels)
+            pixel_pool.difference_update(pixels)
+        connected_pixels.update(new_pixels)
+        to_check = new_pixels
+    return connected_pixels
+
+
 class Stichographer(object):
     def __init__(self, atlas):
         self.atlas = atlas
@@ -138,69 +192,97 @@ class Morphographer(object):
         self.atlas = atlas
         if shape_class is None:
             shape_class = Shape
-        self._shape_class = shape_class
-        self.black = black_shapes  # black_objects_array
-        self.white = white_shapes  # white_objects_array
-        self._black = set(black_shapes)
-        self._white = set(white_shapes)
+        self.shape_class = shape_class
+        self.black = set(black_shapes)  # black_objects_array
+        self.white = set(white_shapes)  # white_objects_array
         self.primary_black = None
         self.primary_white = None
         self.current_iter = self.black
-
-    def set_bounding_boxes_and_contained_shape_references(self):
-        """Creates references of which shapes surround or own (are the smallest surrounding) other shapes."""
-        self.set_all_bounding_boxes()
+        self.minimum_resegment_pixels = MINIMUM_RESEGMENT_PIXELS
         self.set_all_surrounding_shapes()
+        self.set_primary_shapes()
 
-    def set_all_bounding_boxes(self):
-        for shape in self.black + self.white:
-            shape.set_bounding_box()
-            shape.set_area()
-            shape.set_center()
+    def set_all_surrounding_shapes(self):  # set_bounding_boxes_and_contained_shape_references
+        """Creates references of which shapes surround or own (are the smallest surrounding) other shapes."""
+        for shape in self.all_shapes():
+            shape.set_surrounding_shapes(self.black, self.white)
 
-    def set_all_surrounding_shapes(self):
-        for shape in self.black + self.white:
-            shape.set_surrounding_white_shapes()
-            shape.set_surrounding_black_shapes()
+    def set_primary_shapes(self):
+        self.primary_black = largest_shape_of_set(self.black)
+        self.primary_white = largest_shape_of_set(self.white)
+
+    def same_color_shapes_above_shape(self, shape):
+        return {other_shape for other_shape in self.choose_shape_set_of_same_color(shape)
+                if other_shape[0] < shape[0]}
+
+    def same_color_shapes_below_shape(self, shape):
+        return {other_shape for other_shape in self.choose_shape_set_of_same_color(shape)
+                if other_shape[0] > shape[0]}
+
+    def same_color_shapes_right_of_shape(self, shape):
+        return {other_shape for other_shape in self.choose_shape_set_of_same_color(shape)
+                if other_shape[1] > shape[1]}
+
+    def same_color_shapes_left_of_shape(self, shape):
+        return {other_shape for other_shape in self.choose_shape_set_of_same_color(shape)
+                if other_shape[1] < shape[1]}
+
+    def choose_shape_set_of_same_color(self, shape):
+        if shape.color == 0:
+            return self.black
+        return self.white
+
+    def all_shapes(self):
+        return self.black.union(self.white)
+
+    def new_shapes_from_shape(self, shape, shape_pixels=None, shape_validator=None):
+        if shape_pixels is None:
+            shape_pixels = shape.pixels
+        new_shapes = self._resegment_pixels_of_shape(shape, shape_pixels, shape_validator=shape_validator)
+        if new_shapes:
+            shape.set_dimensions()
+            for owned_shape in shape:
+                owned_shape.set_surrounding_shapes(self.black, self.white)
+            self.reset_surrounding_shapes_for(shape)
+            shape.set_shapes_context(self.black, self.white)
+            for shape in new_shapes:
+                shape.set_shapes_context(self.black, self.white)
+
+    def _resegment_pixels_of_shape(self, shape, original_pixels, shape_validator=None):
+        check_pixels = original_pixels.copy()
+        new_shapes = set()
+        for pixel in original_pixels:
+            if pixel in check_pixels:
+                connected = get_connected_pixels_of_set_from_pixel(pixel, check_pixels)
+                check_pixels.difference_update(connected)
+                new_shape = Shape(connected, self.atlas)
+                if (shape_validator(new_shape) if shape_validator is not None
+                        else len(new_shape.pixels) > self.minimum_resegment_pixels):
+                    new_shapes.update({new_shape})
+                    self.choose_shape_set_of_same_color(new_shape).update({new_shape})
+                    shape /= new_shape
+                else:
+                    shape *= new_shape
+        return new_shapes
+
+    def reset_surrounding_shapes_for(self, reset_shape):
+        for shape in self.black.union(self.white):
+            shape.discard(reset_shape)
 
     def __contains__(self, item):
-        if isinstance(item, type(self._shape_class)):
-            if item.color == 0:
-                return item in self._black
-            else:
-                return item in self._white
+        if isinstance(item, type(self.shape_class)):
+            return item in self.choose_shape_set_of_same_color(item)
         raise ValueError("Cannot check if {} in {}: {} is not a mapped type.".format(item, self.__class__, type(item)))
 
     def __len__(self):
-        return len(self.current_iter)
-
-    def __length_hint__(self):
-        return self.current_iter.length_hint()
-
-    def __getitem__(self, key):
-        try:
-            return self.current_iter[key]
-        except (TypeError, IndexError):
-            next_iter = self.white if self.current_iter is self.black else self.black
-            try:
-                return next_iter[key]
-            except (TypeError, IndexError):
-                raise
+        return len(self.all_shapes())
 
     def __iter__(self):
-        self._n = 0
-        return self
-
-    def __next__(self):
-        current_index = self._n
-        if current_index < len(self.current_iter):
-            self._n += 1
-            return self.current_iter[current_index]
-        raise StopIteration
+        return iter(self.all_shapes())
 
     def __str__(self):
-        return "<Shapeographer Object {} | {} total shapes | {} black shapes and {} white shapes.>".format(
-            id(self), len(self.black) + len(self.white), len(self.black), len(self.white)
+        return "<Shapeographer Object {} | {} total shapes | {} black shapes and {} white shapes>".format(
+            id(self), len(self.all_shapes()), len(self.black), len(self.white)
         )
 
     __repr__ = __str__  # Todo: repr?
@@ -211,7 +293,7 @@ class Micrographer(object):
         self.atlas = atlas
         if pixel_class is None:
             pixel_class = Pixel
-        self._pixel_class = pixel_class
+        self.pixel_class = pixel_class
         self.pixels = pixels  # pixel_array
 
     def __contains__(self, item):
@@ -219,9 +301,6 @@ class Micrographer(object):
 
     def __len__(self):
         return len(self.pixels)
-
-    def __length_hint__(self):
-        return self.pixels.length_hint()
 
     def __getitem__(self, key):
         try:
@@ -241,7 +320,7 @@ class Micrographer(object):
         raise StopIteration
 
     def __str__(self):
-        return "<Pixeographer Object {} | {} total pixels | {} pixels tall by {} pixels wide.>".format(
+        return "<Pixeographer Object {} | {} total pixels | {} pixels tall by {} pixels wide>".format(
             id(self), len(self) * len(self[0]), len(self), len(self[0])
         )
 
@@ -250,7 +329,7 @@ class Micrographer(object):
 
 class Atlas(object):
     """Coordinates references between the abstract objects in an image."""
-    default_mappings = {"shapes", "pixels"}
+    default_mappings = {"shapes", "pixels", _BUILTIN_TABLE}
 
     def __init__(self, seed_image, *, pixel_class=None, shape_class=None):
         internal_time = time()
@@ -259,10 +338,15 @@ class Atlas(object):
         self.image = seed_image
         black_shapes, white_shapes, pixels = self.get_binary_four_way_connected_shapes(
             seed_image, pixel_class=pixel_class, shape_class=shape_class)
-        print("Internal mapping-only completed in {}.".format(time() - internal_time))
+        external_time = time()
+        print("Internal mapping-only completed in {}.".format(external_time - internal_time))
         self.pixels = Micrographer(self, pixels, pixel_class=pixel_class)
         self.shapes = Morphographer(self, black_shapes, white_shapes, shape_class=shape_class)
         self._appendix = [self.shapes, self.pixels]
+        fin_time = time()
+        print("External attribute-storage completed in {}.".format(fin_time - external_time))
+        print("Total Atlas Time: {}.".format(fin_time - internal_time))
+        print("Difference due to external: {}".format((fin_time - internal_time) - (external_time - internal_time)))
 
     def get_binary_four_way_connected_shapes(self, source, *, pixel_class=None, shape_class=None):
         """
@@ -296,8 +380,8 @@ class Atlas(object):
     def __getattr__(self, name):
         if name in self.__dict__:
             return self.__dict__[name]
-        elif "_appendix" in self.__dict__:
-            for internal_map in self.__dict__["_appendix"]:
+        elif _BUILTIN_TABLE in self.__dict__:
+            for internal_map in self.__dict__[_BUILTIN_TABLE]:
                 if hasattr(internal_map, name):
                     return getattr(internal_map, name)
             else:
@@ -308,8 +392,8 @@ class Atlas(object):
     def __setattr__(self, name, value):
         if name in self.__dict__:
             self.__dict__[name] = value
-        elif hasattr(self, "_appendix"):
-            for internal_map in self._appendix:
+        elif hasattr(self, _BUILTIN_TABLE):
+            for internal_map in self.__dict__[_BUILTIN_TABLE]:
                 if hasattr(internal_map, name):
                     setattr(internal_map, name, value)
                     break
@@ -320,9 +404,8 @@ class Atlas(object):
 
     def __delattr__(self, name):
         if hasattr(self, name):
-            assert name not in self.default_mappings, (
-                "Error: Deleting built-in type {} will cause AttributeErrors.".format(name)
-            )
+            if name in self.default_mappings:
+                raise ValueError("Deleting built-in type {} will cause AttributeErrors.".format(name))
             del self.__dict__[name]
         else:
             for internal_map in self._appendix:
@@ -333,7 +416,7 @@ class Atlas(object):
                 raise AttributeError(self._not_in(name, "deletion"))
 
     def __str__(self):
-        return "<Atlas Object {} | {} pixels | {} black shapes | {} white shapes | {} height x {} width.>".format(
+        return "<Atlas Object {} | {} pixels | {} black shapes | {} white shapes | {} height x {} width>".format(
             id(self), len(self.pixels) * len(self.pixels[0]), len(self.shapes.black), len(self.shapes.white),
             self.rows, self.columns
         )
@@ -370,31 +453,55 @@ class Pixel(object):
     def set_neighbors(self, *neighbors):
         self.neighbors = neighbors
 
-    @staticmethod
-    def black_or_white(color):
-        if color == 0:
-            return "Black"
-        return "White"
+    def __sub__(self, other):
+        return tuple(coord - other_coord for coord, other_coord in zip(self.coordinates, other.coordinates))
+
+    def __lt__(self, other):
+        return tuple(coord < other_coord for coord, other_coord in zip(self.coordinates, other.coordinates))
+
+    def __le__(self, other):
+        return tuple(coord <= other_coord for coord, other_coord in zip(self.coordinates, other.coordinates))
+
+    def __gt__(self, other):
+        return tuple(coord > other_coord for coord, other_coord in zip(self.coordinates, other.coordinates))
+
+    def __ge__(self, other):
+        return tuple(coord >= other_coord for coord, other_coord in zip(self.coordinates, other.coordinates))
+
+    def __eq__(self, other):
+        return tuple(coord == other_coord for coord, other_coord in zip(self.coordinates, other.coordinates))
+
+    def __contains__(self, item):
+        return item in self.neighbors
+
+    def __len__(self):
+        return len(self.neighbors)
+
+    def __getitem__(self, key):
+        try:
+            return self.neighbors[key]
+        except (TypeError, IndexError):
+            raise
+
+    def __iter__(self):
+        return iter(self.neighbors)
 
     def __str__(self):
-        return "<{} Pixel object {} from coordinates {}.>".format(
-            self.black_or_white(self.color), id(self), self.coordinates
+        return "<{} Pixel object {} from coordinates {}>".format(
+            black_or_white(self.color), id(self), self.coordinates
         )
 
     __repr__ = __str__  # Todo: repr?
 
     def __hash__(self):
-        return hash((type(self), self.coordinates))
+        return hash((type(self), id(self)))
 
 
 class Shape(object):
     """A continuous group of same-color Pixel objects representing a connected object."""
 
-    __slots__ = ['atlas', 'assigned_row', 'assigned_column', 'assigned_segment', 'neural_network_id',
-                 'is_circle', 'coordinates', 'surrounded_whitespaces',
-                 'surrounded_blackspaces', 'owned_whitespaces', 'owned_blackspaces', 'smallest_surrounding_whitespace',
-                 'smallest_surrounding_blackspace', 'closest_shape_for_columns', 'area', 'box', 'pixels',
-                 'color', '_pixels']
+    __slots__ = ['atlas', 'row', 'column', 'segment', 'neural_network_id', 'neural_network_confidence', 'is_circle',
+                 'inner', 'owned', 'roots', '_coordinates', '_area', '_height', '_width', '_box', 'pixels', 'color']
 
     def __init__(self, init_pixels, atlas):
         """
@@ -407,71 +514,495 @@ class Shape(object):
         :return: None
         """
         self.atlas = atlas  # space_reference
-        self.assigned_row = None  # assigned_row
-        self.assigned_column = None
-        self.assigned_segment = None
+        self.row = None  # assigned_row
+        self.column = None  # assigned_column
+        self.segment = None
         self.neural_network_id = None
+        self.neural_network_confidence = None  # TODO: Influence matching
         self.is_circle = None
-        self.coordinates = None  # bounding_box_center_point
-        self.surrounded_whitespaces = None
-        self.surrounded_blackspaces = None
-        self.owned_whitespaces = None
-        self.owned_blackspaces = None
-        self.smallest_surrounding_whitespace = None
-        self.smallest_surrounding_blackspace = None
-        self.closest_shape_for_columns = None
-        self.area = None
-        self.box = None  # bounding_box
+        self.inner = set()  # surrounded_blackspaces & surrounded_whitespaces
+        self.owned = set()  # owned_whitespaces & owned_blackspaces
+        self.roots = {0: None, 1: None}  # smallest_surrounding_whitespace & smallest_surrounding_blackspace
+        self._coordinates = None  # bounding_box_center_point
+        self._area = None  # removed: closest_shape_for_columns
+        self._height = None
+        self._width = None
+        self._box = None  # bounding_box
         if init_pixels is not None:
             if hasattr(init_pixels, "tolist"):
-                self.pixels = init_pixels.tolist()  # pixel_array
+                self.pixels = set(init_pixels.tolist())  # pixel_array
             else:
-                self.pixels = list(init_pixels)
+                self.pixels = set(init_pixels)
+            self.color = next(iter(self.pixels)).color if self.pixels else None  # Whitespace_or_blackspace
         else:
-            self.pixels = []
-        self.color = self.pixels[0].color  # Whitespace_or_blackspace
+            self.pixels = set()
+            self.color = None
         self.assign_pixels(self.pixels)
-        self._pixels = None
 
     def assign_pixels(self, pixels):
         for pix in pixels:
             pix.shape = self
 
-    def set_pixels(self):
-        self._pixels = set(self.pixels)
+    def set_surrounding_shapes(self, *color_separated_shapes):
+        for color_set in color_separated_shapes:
+            self.set_surrounding_shapes_from_single_color_set(color_set)
 
-    def set_bounding_box(self):
-        pass
+    def set_surrounding_shapes_from_single_color_set(self, shapes_pool):
+        smallest_shape = None
+        smallest_area = None
+        for shape in shapes_pool:
+            _, smallest_shape, smallest_area = self.compare_shape_context(shape, smallest_shape, smallest_area)
+        self.set_root(smallest_shape)
 
-    def set_area(self):
-        pass
+    def compare_shape_context(self, shape, previous_smallest_shape, previous_smallest_area):
+        inside_check = calc_tools.is_inside(*self.box, *shape.box)
+        if inside_check and shape is not self:
+            shape.append(self)
+            try:
+                if shape.area < previous_smallest_area:
+                    previous_smallest_shape = shape
+                    previous_smallest_area = shape.area
+            except TypeError:
+                previous_smallest_shape = shape
+                previous_smallest_area = shape.area
+        return inside_check, previous_smallest_shape, previous_smallest_area
 
-    def set_center(self):
-        pass
+    def set_root(self, smallest_shape):
+        if smallest_shape is not None:
+            old_root = self.roots.get(smallest_shape.color)
+            if old_root is not None:
+                old_root.remove(self)
+            smallest_shape.update(self)
+            self.roots.update({smallest_shape.color: smallest_shape})
 
-    def set_surrounding_shapes(self, white_shapes, black_shapes):
-        self.get_surrounding_shapes_from(black_shapes)
+    def set_shapes_context(self, *color_separated_shapes):
+        for color_set in color_separated_shapes:
+            self.set_shape_context_from_single_color_set(color_set)
 
-    def get_surrounding_shapes_from(self, shapes_pool):
-        for whitespace in self.atlas.white_objects_array:
-            inside_check = is_inside(self.bounding_box, whitespace.bounding_box)
-            if inside_check and whitespace is not self:
-                whitespace.update_container_status(self)
-                if self.smallest_surrounding_whitespace is None:
-                    self.smallest_surrounding_whitespace = whitespace
-                elif whitespace.area < self.smallest_surrounding_whitespace.area:
-                    self.smallest_surrounding_whitespace = whitespace
-        if self.smallest_surrounding_whitespace is not None:
-            shape = self.smallest_surrounding_whitespace
-            shape.update_owned_shape(self)
+    def set_shape_context_from_single_color_set(self, shapes_pool):
+        smallest_shape = None
+        smallest_area = None
+        for shape in shapes_pool:
+            if shape is not self:
+                inside, smallest_shape, smallest_area = self.compare_shape_context(shape, smallest_shape, smallest_area)
+                if not inside:
+                    inside_check = calc_tools.is_inside(*shape.box, *self.box)
+                    if inside_check:
+                        shape.set_root(self)
+        self.set_root(smallest_shape)
 
-    def placeholders(self, shapes):
-        for shape in shapes:
-            shape.set_bounding_box()
-            shape.set_area()
-            shape.set_center()
-            shape.set_surrounding_white_shapes()
-            shape.set_surrounding_black_shapes()
+    def compare_root(self, new_root):
+        old_root = self.roots.get(new_root.color)
+        if old_root is not None:
+            if old_root.area > new_root.area:
+                old_root.remove(self)
+                new_root.update(self)
+                self.roots.update({new_root.color: new_root})
+            else:
+                new_root.append(self)
+
+    def get_neighbor_pixels_of_shape(self, shape):  # get_neighbor_pixels_of_object
+        neighbor_pixels = {}
+        for pixel in self.pixels:
+            for neighbor in pixel:
+                if neighbor and neighbor.shape is shape:
+                    neighbor_pixels.update({neighbor})
+        return neighbor_pixels
+
+    @property
+    def box(self):
+        if self._box is None:
+            self.box = self.pixels
+        return self._box
+
+    @box.setter
+    def box(self, pixels):
+        if pixels is not None:
+            if pixels:
+                min_vertical = min(pixel.coordinates[0] for pixel in pixels)
+                max_vertical = max(pixel.coordinates[0] for pixel in pixels)
+                min_horizontal = min(pixel.coordinates[1] for pixel in pixels)
+                max_horizontal = max(pixel.coordinates[1] for pixel in pixels)
+            else:
+                max_vertical = min_vertical = max_horizontal = min_horizontal = -1
+            self._box = (min_vertical, max_vertical, min_horizontal, max_horizontal)
+        else:
+            self._box = None
+
+    @property
+    def height(self):
+        if self._height is None:
+            self.dimensions = self.box
+        return self._height
+
+    @height.deleter
+    def height(self):
+        self._height = None
+
+    @property
+    def width(self):
+        if self._width is None:
+            self.dimensions = self.box
+        return self._width
+
+    @width.deleter
+    def width(self):
+        self._width = None
+
+    @property
+    def area(self):
+        if self._area is None:
+            self._area = self.height * self.width
+        return self._area
+
+    @area.deleter
+    def area(self):
+        self._area = None
+
+    @property
+    def dimensions(self):
+        if None in (self._height, self._width):
+            self.dimensions = self.box
+        return self.height, self.width
+
+    @dimensions.setter
+    def dimensions(self, box):
+        self._height, self._width = calc_tools.find_dimension_from_box(*box)
+
+    @dimensions.deleter
+    def dimensions(self):
+        self._height, self._width = None, None
+        self._area = None
+
+    @property
+    def coordinates(self):
+        if self._coordinates is None:
+            self._coordinates = calc_tools.find_coordinates_from_box(*self.box)
+        return self._coordinates
+
+    @coordinates.deleter
+    def coordinates(self):
+        self._coordinates = None
+
+    @property
+    def pixel_stats(self):
+        return self.box, self.area, self.coordinates
+
+    @pixel_stats.deleter
+    def pixel_stats(self):
+        self._box = None
+        self._area = None
+        self._coordinates = None
+
+    def copy(self):
+        return self.pixels.copy()
+
+    def sum(self, other):
+        if other:
+            item = next(iter(other))
+            if isinstance(item, type(self.atlas.pixel_class)):
+                return self.pixels.union(other)
+            elif isinstance(item, type(self)):
+                self_copy = self.pixels.copy()
+                for shape in other:
+                    self_copy.update(shape.pixels)
+                return self_copy
+            raise TypeError(
+                "Unexpected container with items of type {} finding sum pixels with {}.".format(
+                    type(item), self
+                )
+            )
+        return self.pixels.copy()
+
+    def subtract(self, other):
+        if other:
+            item = next(iter(other))
+            if isinstance(item, type(self.atlas.pixel_class)):
+                return self.pixels.difference(other)
+            elif isinstance(item, type(self)):
+                self_copy = self.pixels.copy()
+                for shape in other:
+                    self_copy.difference_update(shape.pixels)
+                return self_copy
+            raise TypeError(
+                "Unexpected container with items of type {} finding pixel difference with {}.".format(
+                    type(item), self
+                )
+            )
+        return self.pixels.copy()
+
+    def extend(self, other):
+        if other:
+            item = next(iter(other))
+            if isinstance(item, type(self.atlas.pixel_class)):
+                self.pixels.update(other)
+                del self.pixel_stats
+            elif isinstance(item, type(self)):
+                for shape in other:
+                    self.pixels.update(shape.pixels)
+                    self.assign_pixels(shape.pixels)
+                del self.pixel_stats
+            else:
+                raise TypeError(
+                    "Unexpected container with items of type {} adding pixels to {}.".format(
+                        type(item), self
+                    )
+                )
+
+    def difference(self, other):
+        if other:
+            item = next(iter(other))
+            if isinstance(item, type(self.atlas.pixel_class)):
+                self.pixels.difference_update(other)
+                del self.pixel_stats
+            elif isinstance(item, type(self)):
+                for shape in other:
+                    self.pixels.difference_update(shape.pixels)
+                del self.pixel_stats
+            else:
+                raise TypeError(
+                    "Unexpected container with items of type {} removing pixels from {}.".format(
+                        type(item), self
+                    )
+                )
+
+    def append(self, other):
+        if isinstance(other, type(self)):
+            self.inner.update(other)
+        elif isinstance(other, set) or isinstance(other, list):
+            if other:
+                item = next(iter(other))
+                if isinstance(item, type(self)):
+                    self.inner.update(other)
+                elif isinstance(item, type(self.atlas.pixel_class)):
+                    self.pixels.update(other)
+                    self.assign_pixels(other)
+                else:
+                    raise TypeError(
+                        "Unexpected container with items of type {} appended to {}.".format(
+                            type(item), self
+                        )
+                    )
+        elif isinstance(other, self.atlas.pixel_class):
+            self.pixels.update({other})
+            self.assign_pixels({other})
+        else:
+            raise TypeError(
+                "Unexpected item of type {} appended to {}.".format(
+                    type(other), self
+                )
+            )
+
+    def update(self, other):
+        if isinstance(other, type(self)):
+            self.owned.update(other)
+            self.inner.update(other)
+        elif isinstance(other, set) or isinstance(other, list):
+            if other:
+                item = next(iter(other))
+                if isinstance(item, type(self)):
+                    self.owned.update(other)
+                    self.inner.update(other)
+                elif isinstance(item, type(self.atlas.pixel_class)):
+                    self.pixels.update(other)
+                    self.assign_pixels(other)
+                else:
+                    raise TypeError(
+                        "Unexpected container with items of type {} updated in {}.".format(
+                            type(item), self
+                        )
+                    )
+        elif isinstance(other, self.atlas.pixel_class):
+            self.pixels.update({other})
+            self.assign_pixels({other})
+        else:
+            raise TypeError(
+                "Unexpected item of type {} updated in {}.".format(
+                    type(other), self
+                )
+            )
+
+    def remove(self, other):
+        if isinstance(other, type(self)):
+            self.owned.discard(other)
+        elif isinstance(other, set) or isinstance(other, list):
+            if other:
+                item = next(iter(other))
+                if isinstance(item, type(self)):
+                    self.owned.difference_update(other)
+                elif isinstance(item, type(self.atlas.pixel_class)):
+                    self.pixels.difference_update(other)
+                else:
+                    raise TypeError(
+                        "Unexpected container with items of type {} discarded from {}.".format(
+                            type(item), self
+                        )
+                    )
+        elif isinstance(other, self.atlas.pixel_class):
+            self.pixels.discard(other)
+        else:
+            raise TypeError(
+                "Unexpected item of type {} discarded from {}.".format(
+                    type(other), self
+                )
+            )
+
+    def discard(self, other):
+        if isinstance(other, type(self)):
+            self.owned.discard(other)
+            self.inner.discard(other)
+        elif isinstance(other, set) or isinstance(other, list):
+            if other:
+                item = next(iter(other))
+                if isinstance(item, type(self)):
+                    self.owned.difference_update(other)
+                    self.inner.difference_update(other)
+                elif isinstance(item, type(self.atlas.pixel_class)):
+                    self.pixels.difference_update(other)
+                    del self.pixel_stats
+                else:
+                    raise TypeError(
+                        "Unexpected container with items of type {} discarded from {}.".format(
+                            type(item), self
+                        )
+                    )
+        elif isinstance(other, self.atlas.pixel_class):
+            self.pixels.discard(other)
+            del self.pixel_stats
+        else:
+            raise TypeError(
+                "Unexpected item of type {} discarded from {}.".format(
+                    type(other), self
+                )
+            )
+
+    def index(self, item):
+        if isinstance(item, type(self)):
+            return item in self.inner
+        elif isinstance(item, type(self.atlas.pixel_class)):
+            return item in self.pixels
+        raise TypeError(
+            "Unexpected item of type {} queried as contained in {}.".format(
+                type(item), self
+            )
+        )
+
+    def __getitem__(self, key):
+        try:
+            return self.coordinates[key]
+        except (TypeError, IndexError):
+            raise
+
+    def __contains__(self, item):
+        if isinstance(item, type(self)):
+            return item in self.owned
+        elif isinstance(item, type(self.atlas.pixel_class)):
+            return item in self.pixels
+        raise TypeError(
+            "Unexpected item of type {} queried as contained in {}.".format(
+                type(item), self
+            )
+        )
+
+    def __len__(self):
+        return len(self.owned)
+
+    def __iter__(self):
+        return iter(self.owned)
+
+    def __sub__(self, other):
+        return tuple(coord - other_coord for coord, other_coord in zip(self.coordinates, other.coordinates))
+
+    def __mul__(self, other):
+        if isinstance(other, type(self)):
+            return self.pixels.union(other.pixels)
+        elif isinstance(other, set) or isinstance(other, list):
+            return self.sum(other)
+        elif isinstance(other, self.atlas.pixel_class):
+            return self.pixels.union({other})
+        raise TypeError(
+            "Unexpected item of type {} finding sum pixels with {}.".format(
+                type(other), self
+            )
+        )
+
+    def __truediv__(self, other):
+        if isinstance(other, type(self)):
+            return self.pixels.difference(other.pixels)
+        elif isinstance(other, set) or isinstance(other, list):
+            return self.subtract(other)
+        elif isinstance(other, self.atlas.pixel_class):
+            return self.pixels.difference({other})
+        raise TypeError(
+            "Unexpected item of type {} finding pixel difference with {}.".format(
+                type(other), self
+            )
+        )
+
+    def __imul__(self, other):
+        if isinstance(other, type(self)):
+            self.pixels.update(other.pixels)
+            del self.pixel_stats
+        elif isinstance(other, set) or isinstance(other, list):
+            try:
+                self.extend(other)
+            except TypeError:
+                raise
+        elif isinstance(other, self.atlas.pixel_class):
+            self.pixels.update({other})
+            del self.pixel_stats
+        else:
+            raise TypeError(
+                "Unexpected item of type {} adding pixels to {}.".format(
+                    type(other), self
+                )
+            )
+        return self
+
+    def __idiv__(self, other):
+        if isinstance(other, type(self)):
+            self.pixels.difference_update(other.pixels)
+            del self.pixel_stats
+        elif isinstance(other, set) or isinstance(other, list):
+            try:
+                self.difference(other)
+            except TypeError:
+                raise
+        elif isinstance(other, self.atlas.pixel_class):
+            self.pixels.difference_update({other})
+            del self.pixel_stats
+        else:
+            raise TypeError(
+                "Unexpected item of type {} removing pixels from {}.".format(
+                    type(other), self
+                )
+            )
+        return self
+
+    def __lt__(self, other):
+        return other.index(self)
+
+    def __le__(self, other):
+        return self in other
+
+    def __eq__(self, other):
+        return self.pixels == other.pixels
+
+    def __gt__(self, other):
+        return self.index(other)
+
+    def __ge__(self, other):
+        return other in self
+
+    def __str__(self):
+        return "<{} Shape Object {} | {} total pixels | {} area | {} height x {} width>".format(
+            black_or_white(self.color), id(self), len(self.pixels), self.area, self.height, self.width
+        )
+
+    __repr__ = __str__
+
+    def __hash__(self):
+        return hash((type(self), id(self)))
 
 
 if __name__ == "__main__":

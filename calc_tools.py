@@ -29,19 +29,23 @@ def is_inside(x1, y1, x2, y2, x3, y3, x4, y4):
     return inside
 
 
-def find_center_of_bounding_box(x1, y1, x2, y2):
+def find_dimension_from_box(vertical_minimum, vertical_maximum, horizontal_minimum, horizontal_maximum):
+    return vertical_maximum - vertical_minimum, horizontal_maximum - horizontal_minimum
+
+
+def find_coordinates_from_box(vertical_minimum, vertical_maximum, horizontal_minimum, horizontal_maximum):
     """Find center coordinate of bounding box."""
-    x = abs(x1 + x2) / 2
-    y = abs(y1 + y2) / 2
-    return x, y
+    vertical_location = abs(vertical_minimum + vertical_maximum) / 2
+    horizontal_location = abs(horizontal_minimum + horizontal_maximum) / 2
+    return vertical_location, horizontal_location
 
 
-def find_distance(x1, y1, x2, y2):
+def find_distance(vertical_location_a, horizontal_location_a, vertical_location_b, horizontal_location_b):
     """Find distance between two points."""
-    x_dis = x2 - x1
-    y_dis = y2 - y1
-    dis = math.sqrt((x_dis * x_dis) + (y_dis * y_dis))
-    return dis
+    vertical_distance = vertical_location_b - vertical_location_a
+    horizontal_distance = horizontal_location_b - horizontal_location_a
+    distance = math.sqrt((vertical_distance * vertical_distance) + (horizontal_distance * horizontal_distance))
+    return distance
 
 
 def distance_from_two_point_line(x0, y0, x1, y1, x2, y2):  # p0 is the point  # distance_from_twopoint_line
@@ -50,5 +54,3 @@ def distance_from_two_point_line(x0, y0, x1, y1, x2, y2):  # p0 is the point  # 
     denom = math.sqrt(pow((y2 - y1), 2) + pow((x2 - x1), 2))
     result = (nom / denom)
     return result
-
-
