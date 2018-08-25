@@ -187,7 +187,7 @@ def resizeable(wrapped_method):
     return wrapper
 
 
-class Stichographer(object):
+class Stichographer(object):  # TODO
     def __init__(self, atlas):
         self.atlas = atlas
 
@@ -195,7 +195,7 @@ class Stichographer(object):
 class Morphographer(object):
     """You just add 'ographer' to everything? Now THIS is class-naming!"""
 
-    def __init__(self, atlas, *color_separated_shapes, shape_class=None):
+    def __init__(self, atlas, *color_separated_shapes, shape_class=None, **__):
         self.atlas = atlas
         if shape_class is None:
             shape_class = Shape
@@ -207,6 +207,10 @@ class Morphographer(object):
         self.minimum_resegment_pixels = MINIMUM_RESEGMENT_PIXELS
         self.set_all_surrounding_shapes()
         self.set_primary_shapes()
+
+    def row_map(self, *_, **__):  # TODO
+        row_map = Stichographer(self.atlas)
+        return row_map
 
     @property
     def all_shapes(self):
@@ -280,6 +284,9 @@ class Morphographer(object):
                     shape % reset_shape
                 except (AttributeError, TypeError):
                     raise
+
+    def __call__(self, *args, **kwargs):
+        return self.row_map(*args, **kwargs)
 
     def __sub__(self, other):
         try:
@@ -514,9 +521,9 @@ class Pixeographer(object):
     def __init__(self, atlas):
         self.atlas = atlas
         self.pixel_class = None
-        self.pixels = []  # pixel_array
+        self.pixels = []
 
-    def four_connected_binary_map(self, image, *,
+    def four_connected_binary_map(self, image, *_,
                                   image_threshold=ndarray_tools.DEFAULT_IMAGE_THRESH,
                                   pixel_class=None,
                                   shape_class=None):
@@ -538,7 +545,7 @@ class Pixeographer(object):
         # Extract objects/pixels to lists
         shape_map = Morphographer(
             self.atlas, *binary_shapes_from_labels(
-                np_pixels, black_labeled, black_labels, white_labeled, white_labels, self, shape_class=shape_class
+                np_pixels, black_labeled, black_labels, white_labeled, white_labels, self.atlas, shape_class=shape_class
             ), shape_class=shape_class
         )
         self.pixels = np_pixels.tolist()
@@ -603,18 +610,19 @@ class Pixeographer(object):
 
 class Atlas(object):
     """Coordinates references between the abstract objects in an image."""
-    default_mappings = {"shape_map", "pixel_map", _BUILTIN_TABLE}
+    default_mappings = {"shape_map", "pixel_map", "row_map", _BUILTIN_TABLE}
 
-    def __init__(self, seed_image, **mapping_kwargs):
+    def __init__(self, seed_image, *mapping_args, **mapping_kwargs):
         internal_time = time()
         self.rows = len(seed_image)
         self.columns = len(seed_image[0])
         self.image = seed_image
         self.pixel_map = Pixeographer(self)
-        self.shape_map = self.pixel_map(seed_image, **mapping_kwargs)
+        self.shape_map = self.pixel_map(seed_image, *mapping_args, **mapping_kwargs)
+        self.row_map = self.shape_map(*mapping_args, **mapping_kwargs)
         self._hidden_getters = {"page": lambda: self._appendix[0]}
         self._hidden_setters = {"page": lambda page: self._turn_page(self._appendix.index(page))}
-        self._appendix = [self.shape_map, self.pixel_map]
+        self._appendix = [self.shape_map, self.pixel_map, self.row_map]
         self.page = self.shape_map
         fin_time = time()
         print("Total Atlas Time: {}.".format(fin_time - internal_time))
@@ -914,18 +922,6 @@ class Shape(object):
         else:
             self.set_root(new_root)
 
-    def recalculate_linked_contexts(self, context_object=None):
-        if context_object is None:
-            context_object = self.atlas
-        original_owned = self.owned.copy()
-        context_object % self
-        tuple((shape @ context_object for shape in original_owned))
-        print(len(self.pixels))
-        if self:
-            self @ context_object
-            return self
-        del context_object[self]
-
     def get_neighbor_pixels_of_shape(self, shape):
         neighbor_pixels = {}
         for pixel in self.pixels:
@@ -1076,6 +1072,18 @@ class Shape(object):
             elif item in self.pixels:
                 return True
             return False
+
+    def recalculate_linked_contexts(self, context_object=None):
+        if context_object is None:
+            context_object = self.atlas
+        original_owned = self.owned.copy()
+        context_object % self
+        tuple((shape @ context_object for shape in original_owned))
+        print(len(self.pixels))
+        if self:
+            self @ context_object
+            return self
+        del context_object[self]
 
     def copy(self):
         return self.pixels.copy()
