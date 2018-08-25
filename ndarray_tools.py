@@ -3,6 +3,9 @@ import numpy as np
 import cv2
 
 
+DEFAULT_IMAGE_THRESH = 122
+
+
 def np_shift(arr, num, fill_value=None):
     result = np.empty_like(arr)
     if num > 0:
@@ -42,7 +45,7 @@ def np_shift_h(arr, num, fill_value=None):
     return result
 
 
-def threshold_image(image, threshold=122, max_value=255):
+def threshold_image(image, threshold=DEFAULT_IMAGE_THRESH, max_value=255):
     """Threshold an image using cv2 binary thresh."""
     _, converted_img = cv2.threshold(image, thresh=threshold, maxval=max_value, type=cv2.THRESH_BINARY)
     return converted_img
