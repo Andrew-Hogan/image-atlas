@@ -76,6 +76,13 @@ class Atlas(object):
 
     def __init__(self, seed_image, *mapping_args, **mapping_kwargs):
         internal_time = time()
+        self._annex_key_converters = {
+            list.__name__: lambda x: x[0],
+            tuple.__name__: lambda x: x[0],
+            set.__name__: lambda x: next(iter(x)),
+            dict.__name__: lambda x: x.values()[0]
+        }
+        self._annex = {}
         self.rows = len(seed_image)
         self.columns = len(seed_image[0])
         self.image = seed_image
@@ -83,20 +90,42 @@ class Atlas(object):
         self.shape_map = self.pixel_map(seed_image, *mapping_args, **mapping_kwargs)
         self.row_map = self.shape_map(*mapping_args, **mapping_kwargs)
         self._hidden_getters = {"page": lambda: self._appendix[0]}
-        self._hidden_setters = {"page": lambda page: self._turn_page(self._appendix.index(page))}
+        self._hidden_setters = {"page": lambda page: self._turn_page(self._get_appendix_index_for(page))}
         self._appendix = [self.shape_map, self.pixel_map, self.row_map]
         self.page = self.shape_map
         fin_time = time()
         print("Total Atlas Time: {}.".format(fin_time - internal_time))
 
-    def get_cartographer(self, item):
+    def update_annex_key_converters(self, converter_dict):
+        for key, converter in converter_dict.items():
+            if key in self._annex_key_converters:
+                raise ValueError("Changing built-in converter for class {} will cause AttributeErrors.".format(key))
+            self._annex_key_converters.update({key: converter})
+
+    def update_annex(self, annex_to_cartographer_dict):
+        self._annex.update(annex_to_cartographer_dict)
+
+    def open_to_page(self, topic_in_page):
         try:
-            cartographer, _ = self._get_cartographer_and_value(item)
-            return cartographer
+            self.page = self.get_cartographer(topic_in_page)
         except KeyError:
             raise
+        else:
+            return self
 
-    def _get_cartographer_and_value(self, item):
+    def get_cartographer(self, item):
+        annex_key_converter = self._annex_key_converters.get(item.__class__.__name__, lambda x: x)
+        annex_key = annex_key_converter(item).__class__.__name__
+        try:
+            cartographer = self._annex.get(annex_key, self.get_cartographer_and_set(item)[0])
+        except KeyError:
+            raise
+        else:
+            if annex_key not in self._annex:
+                self._annex.update({annex_key: cartographer})
+            return cartographer
+
+    def get_cartographer_and_set(self, item):
         if hasattr(self, _BUILTIN_TABLE):
             for internal_map in self.__dict__[_BUILTIN_TABLE]:
                 try:
@@ -106,6 +135,13 @@ class Atlas(object):
         if item in self.__dict__:
             return self, getattr(self, item)
         raise KeyError("Key {} not in {}.".format(item, self))
+
+    def _get_appendix_index_for(self, page_or_item):
+        if page_or_item in self._appendix:
+            return self._appendix.index(page_or_item)
+        else:
+            new_page = self.get_cartographer(page_or_item)
+            return self._appendix.index(new_page)
 
     def _turn_page(self, key=-1):
         if key < 0:
@@ -178,51 +214,35 @@ class Atlas(object):
                 + " | {} height x {} width>".format(
                     self.rows, self.columns))
 
-    __repr__ = __str__  # Todo: repr?
-
-    def _redirect_operator(self, operator, operand):
-        try:
-            cartographer = self.get_cartographer(operand)
-            print("CART: {}".format(cartographer))
-        except KeyError:
-            raise
-        else:
-            return operator(cartographer, operand)
+    __repr__ = __str__
 
     @annex
     def __sub__(self, other):
         return self.get_cartographer(other)
-        # return self._redirect_operator(lambda x, y: x - y, other)
 
     @annex
     def __add__(self, other):
         return self.get_cartographer(other)
-        # return self._redirect_operator(lambda x, y: x + y, other)
 
     @annex
     def __mod__(self, other):
         return self.get_cartographer(other)
-        # return self._redirect_operator(lambda x, y: x % y, other)
 
     @annex
     def __matmul__(self, other):
         return self.get_cartographer(other)
-        # return self._redirect_operator(lambda x, y: x @ y, other)
 
     @annex(swap_order=True)
     def __rmatmul__(self, other):
         return self.get_cartographer(other)
-        # return self._redirect_operator(lambda x, y: y @ x, other)
 
     @annex
     def __truediv__(self, other):
         return self.get_cartographer(other)
-        # return self._redirect_operator(lambda x, y: x / y, other)
 
     @annex
     def __delitem__(self, other):
         return self.get_cartographer(other)
-        # return self._redirect_operator(lambda x, y, name=get_function_name(): getattr(x, name)(y), other)
 
     @classmethod
     def _not_in(cls, name, access_method):
@@ -244,6 +264,7 @@ class Pixeographer(object):
         if pixel_class is None:
             pixel_class = Pixel
         self.pixel_class = pixel_class
+        self.atlas.update_annex({self.pixel_class.__name__: self})
 
         # Convert to binary
         image = ndarray_tools.threshold_image(image, threshold=image_threshold, max_value=1)
@@ -328,6 +349,7 @@ class Morphographer(object):
         if shape_class is None:
             shape_class = Shape
         self.shape_class = shape_class
+        self.atlas.update_annex({self.shape_class.__name__: self})
         self.shapes = {same_color_shapes[0].color: set(same_color_shapes)
                        for same_color_shapes in color_separated_shapes}
         self.primary_shape = {same_color_shapes[0].color: None for same_color_shapes
@@ -540,7 +562,7 @@ class Morphographer(object):
         return iter(self.shapes.values())
 
     def __str__(self):
-        return ("<Shapeographer Object {} | {} total shapes | ".format(id(self), len(self.all_shapes))
+        return ("<Morphographer Object {} | {} total shapes | ".format(id(self), len(self.all_shapes))
                 + ' | '.join(("{} {} shapes".format(len(shapes_of_color), color_to_string(color_key))
                               for color_key, shapes_of_color in self.items()))
                 + ">")
@@ -581,9 +603,28 @@ def test_resegment(atlas):
         count += 1
         if count > 5:
             break
+    test_pixel = next(iter(save_new[0].pixels))
+    curr_page = len([x for x in atlas])
+
+    print("Current page: {} | Length of current page: {}".format(atlas.page, curr_page))
+
+    atlas.open_to_page(test_pixel)
+
+    new_page = len([x for x in atlas])
+
+    print("Current page: {} | Length of current page: {}".format(atlas.page, new_page))
+
+    atlas.page = save_new[0]
+
+    final_page = len([x for x in atlas])
+
+    print("Current page: {} | Length of current page: {}".format(atlas.page, final_page))
+
     atlas - save_new
     new_shapes = len(atlas[0])
     print("New # shapes: {}".format(new_shapes - previous_shapes))
+    print("Atlas annex: {}".format(atlas._annex))
+    return
 
 
 def redirectable_test():
@@ -609,3 +650,4 @@ if __name__ == "__main__":
         len(test_space[0]), len(test_space[1])))
     print(test_space)
     test_resegment(test_space)
+    sys.exit(0)

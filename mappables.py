@@ -68,7 +68,10 @@ class Pixel(object):
         return tuple(coord >= other_coord for coord, other_coord in zip(self.coordinates, other.coordinates))
 
     def __eq__(self, other):
-        return tuple(coord == other_coord for coord, other_coord in zip(self.coordinates, other.coordinates))
+        try:
+            return tuple(coord == other_coord for coord, other_coord in zip(self.coordinates, other.coordinates))
+        except AttributeError:
+            return False
 
     def __contains__(self, item):
         return item in self.neighbors
@@ -509,7 +512,10 @@ class Shape(object):
         return self in other
 
     def __eq__(self, other):
-        return self.pixels == other.pixels
+        try:
+            return self.pixels == other.pixels
+        except AttributeError:
+            return False
 
     def __gt__(self, other):
         return self.index(other)
