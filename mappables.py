@@ -200,6 +200,12 @@ class Shape(object):
         else:
             self.set_root(new_root)
 
+    def owned_of(self, color):
+        return [shape for shape in self if shape.color == color]
+
+    def inner_of(self, color):
+        return [shape for shape in self.inner if shape.color == color]
+
     def get_neighbor_pixels_of_shape(self, shape):
         neighbor_pixels = {}
         for pixel in self.pixels:

@@ -3,6 +3,7 @@ from time import time
 import cv2
 
 from atlas_tools import *
+import inspectors
 
 
 _BUILTIN_TABLE = "_appendix"
@@ -74,7 +75,7 @@ class Atlas(object):
     """Coordinates references between the abstract objects in an image."""
     default_mappings = {"shape_map", "pixel_map", "row_map", _BUILTIN_TABLE}
 
-    def __init__(self, seed_image, *mapping_args, **mapping_kwargs):
+    def __init__(self, seed_image_or_file, *mapping_args, **mapping_kwargs):
         internal_time = time()
         self._annex_key_converters = {
             list.__name__: lambda x: x[0],
@@ -83,11 +84,9 @@ class Atlas(object):
             dict.__name__: lambda x: x.values()[0]
         }
         self._annex = {}
-        self.rows = len(seed_image)
-        self.columns = len(seed_image[0])
-        self.image = seed_image
+        self.image_lens = inspectors.Lens(self)
         self.pixel_map = Pixeographer(self)
-        self.shape_map = self.pixel_map(seed_image, *mapping_args, **mapping_kwargs)
+        self.shape_map = self.pixel_map(self.image_lens(seed_image_or_file), *mapping_args, **mapping_kwargs)
         self.row_map = self.shape_map(*mapping_args, **mapping_kwargs)
         self._hidden_getters = {"page": lambda: self._appendix[0]}
         self._hidden_setters = {"page": lambda page: self._turn_page(self._get_appendix_index_for(page))}
@@ -206,13 +205,12 @@ class Atlas(object):
                 raise AttributeError(self._not_in(name, "deletion"))
 
     def __str__(self):
-        return ("<Atlas Object {} | {} pixels | ".format(
-                    id(self), len(self.pixels) * len(self.pixels[0]))
-                + ' | '.join(("{} {} shapes".format(
-                    len(shapes_of_color), color_to_string(color_key))
-                    for color_key, shapes_of_color in self.shapes.items()))
-                + " | {} height x {} width>".format(
-                    self.rows, self.columns))
+        return (
+            "<Atlas Object {} | {} pixels | ".format(id(self), len(self.pixels) * len(self.pixels[0]))
+            + ' | '.join(("{} {} shapes".format(len(shapes_of_color), color_to_string(color_key))
+                          for color_key, shapes_of_color in self.shapes.items()))
+            + " | {} height x {} width>".format(self.image_lens.rows, self.image_lens.columns)
+        )
 
     __repr__ = __str__
 
@@ -256,18 +254,14 @@ class Pixeographer(object):
         self.pixels = []
 
     def four_connected_binary_map(self, image, *_,
-                                  image_threshold=ndarray_tools.DEFAULT_IMAGE_THRESH,
                                   pixel_class=None,
-                                  shape_class=None):
+                                  shape_class=None, **__):
 
         assert not self.pixels, "Pixeographer already mapping pixels, cannot map another image."
         if pixel_class is None:
             pixel_class = Pixel
         self.pixel_class = pixel_class
         self.atlas.update_annex({self.pixel_class.__name__: self})
-
-        # Convert to binary
-        image = ndarray_tools.threshold_image(image, threshold=image_threshold, max_value=1)
 
         # Shapes labels
         black_labeled, black_labels, white_labeled, white_labels = binary_label_ndarray(image)

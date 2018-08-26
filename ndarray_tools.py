@@ -2,6 +2,8 @@
 import numpy as np
 import cv2
 
+import import_tools
+
 
 DEFAULT_IMAGE_THRESH = 122
 
@@ -43,6 +45,29 @@ def np_shift_h(arr, num, fill_value=None):
     else:
         result = arr
     return result
+
+
+def import_image_as_ndarray(image_or_image_file, grayscale=True):
+    if isinstance(image_or_image_file, str):
+        return import_tools.import_any_image_file(
+            image_or_image_file, im_mode=import_tools.LOAD_CV2_GRAYSCALE if grayscale else None
+        )
+    elif isinstance(image_or_image_file, np.ndarray):
+        if grayscale:
+            return format_ndarray_dimension_to_grayscale(image_or_image_file)
+        return image_or_image_file
+    elif grayscale:
+        return cv2.cvtColor(np.array(image_or_image_file), cv2.COLOR_RGB2GRAY)
+    return cv2.cvtColor(np.array(image_or_image_file), cv2.COLOR_RGB2BGR)
+
+
+def format_ndarray_dimension_to_grayscale(image):
+    if len(image.shape) > 2:
+        try:
+            return np.squeeze(image, axis=2)
+        except ValueError:
+            return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    return image
 
 
 def threshold_image(image, threshold=DEFAULT_IMAGE_THRESH, max_value=255):
