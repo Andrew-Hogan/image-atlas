@@ -448,6 +448,10 @@ class Shape(object):
         self._coordinates = None
 
     @property
+    def distances_from_center(self):
+        return [calc_tools.find_distance(*self.coordinates, *pixel.coordinates) for pixel in self.pixels]
+
+    @property
     def pixel_stats(self):
         return self.box, self.area, self.coordinates
 

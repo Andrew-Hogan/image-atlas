@@ -1,27 +1,24 @@
 import traceback
 import sys
-import functools
 
 import numpy as np
 from scipy import ndimage
 
 import ndarray_tools
-from mappables import Pixel, Shape
+import mappables
 
 
-PIXEL_VALUE_TO_COLOR_DICT = {0: "Black", 1: "White"}
-
-
-@property  # TODO?
+@property
 def should_recalculate_context_strict(*_, changes_cache={}, **__):
     return True
 
 
-@property  # TODO.
+@property  # TODO: Heuristic for determining severity of impact for changes since last recalculation - potential class.
 def should_recalculate_context_lax(*, changes_cache={}):
     return False
 
 
+PIXEL_VALUE_TO_COLOR_DICT = {0: "Black", 1: "White"}
 RESIZE_STRICTNESS = "STRICT"
 RESIZE_STRICTNESS_DICT = {
     "STRICT": should_recalculate_context_strict,
@@ -34,16 +31,15 @@ def should_recalculate():
     return RESIZE_STRICTNESS_DICT.get(RESIZE_STRICTNESS)
 
 
-def quad_neighbor_pixels_from_ndarray(image, *, pixel_class=None):
-    pixels = pixels_from_ndarray(image, pixel_class=pixel_class)
+def quad_neighbor_pixels_from_ndarray(image, pixel_class):
+    pixels = pixels_from_ndarray(image, pixel_class)
     pixel_quad_neighbors_from_ndarray(pixels)
     return pixels
 
 
-def pixels_from_ndarray(image, *, pixel_class=None):
-    if pixel_class is None:
-        pixel_class = Pixel
-    pixel_data_type = np.dtype(pixel_class)
+def pixels_from_ndarray(image, pixel_class, pixel_data_type=None):
+    if pixel_data_type is None:
+        pixel_data_type = np.dtype(pixel_class)
     vertical_indices, horizontal_indices = np.indices(image.shape)
     return _iter_convert_pixels(
         image, vertical_indices, horizontal_indices, pixel_data_type,
@@ -53,7 +49,6 @@ def pixels_from_ndarray(image, *, pixel_class=None):
 
 
 def _iter_convert_pixels(image_to_iter, vertical_indices, horizontal_indices, pixel_data_type, pixel_from_attributes):
-    # out = np.empty_like(image_to_iter, dtype=out_type)
     pixel_convert = np.frompyfunc(pixel_from_attributes, 3, 1)
     convert_iterable = np.nditer([image_to_iter, vertical_indices, horizontal_indices, None],
                                  flags=['external_loop', 'buffered', 'refs_ok'],
@@ -123,29 +118,22 @@ def label_ndarray_ones(image, *np_args, **np_kwargs):
 def binary_shapes_from_labels(pixels,
                               black_labeled, black_labels,
                               white_labeled, white_labels,
-                              *args, shape_class=None, shape_data_type=None, **kwargs):
-    if shape_class is None:
-        shape_class = Shape
+                              shape_class, *args, shape_data_type=None, **kwargs):
     if shape_data_type is None:
         shape_data_type = np.dtype(shape_class)
 
     black_shapes = shapes_from_labels(
-        pixels, black_labeled, black_labels, *args, shape_class=shape_class, shape_data_type=shape_data_type, **kwargs
+        pixels, black_labeled, black_labels, shape_class, shape_data_type, *args, **kwargs
     )
 
     white_shapes = shapes_from_labels(
-        pixels, white_labeled, white_labels, *args, shape_class=shape_class, shape_data_type=shape_data_type, **kwargs
+        pixels, white_labeled, white_labels, shape_class, shape_data_type, *args, **kwargs
     )
 
     return black_shapes, white_shapes
 
 
-def shapes_from_labels(pixels, labeled_image, labels, *args, shape_class=None, shape_data_type=None, **kwargs):
-    if shape_class is None:
-        shape_class = Shape
-    if shape_data_type is None:
-        shape_data_type = np.dtype(shape_class)
-
+def shapes_from_labels(pixels, labeled_image, labels, shape_class, shape_data_type, *args, **kwargs):
     return ndimage.labeled_comprehension(
         pixels, labeled_image, labels,
         lambda shape_pixels: shape_class(shape_pixels, *args, **kwargs),

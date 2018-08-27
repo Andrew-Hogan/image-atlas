@@ -1,8 +1,10 @@
+import functools
 from time import time
 
 import cv2
 
-from atlas_tools import *
+import atlas_tools as at
+import mappables
 import inspectors
 
 
@@ -12,12 +14,12 @@ _BUILTIN_SETTERS = "_hidden_setters"
 MINIMUM_RESEGMENT_PIXELS = 20
 
 
-def redirectable(_wrapped_method=None, *,
-                 exceptions=(TypeError, IndexError, KeyError, AttributeError),
-                 in_iterable_validator=lambda x, y: isinstance(y, (set, list, tuple, x.__class__)),
-                 in_items_validator=lambda x, y: isinstance(y, dict),
-                 args_target_index=0,
-                 iter_results_post_processor=lambda results: results[-1]):
+def container_dispatch(_wrapped_method=None, *,
+                       exceptions=(TypeError, IndexError, KeyError, AttributeError),
+                       in_iterable_validator=lambda x, y: isinstance(y, (set, list, tuple, x.__class__)),
+                       in_items_validator=lambda x, y: isinstance(y, dict),
+                       args_target_index=0,
+                       iter_results_post_processor=lambda results: results[-1]):
 
     args_and_target_mesh = (
         lambda args_tuple, target: args_tuple[args_target_index+1:] + (target,) + args_tuple[:args_target_index]
@@ -207,7 +209,7 @@ class Atlas(object):
     def __str__(self):
         return (
             "<Atlas Object {} | {} pixels | ".format(id(self), len(self.pixels) * len(self.pixels[0]))
-            + ' | '.join(("{} {} shapes".format(len(shapes_of_color), color_to_string(color_key))
+            + ' | '.join(("{} {} shapes".format(len(shapes_of_color), at.color_to_string(color_key))
                           for color_key, shapes_of_color in self.shapes.items()))
             + " | {} height x {} width>".format(self.image_lens.rows, self.image_lens.columns)
         )
@@ -259,20 +261,22 @@ class Pixeographer(object):
 
         assert not self.pixels, "Pixeographer already mapping pixels, cannot map another image."
         if pixel_class is None:
-            pixel_class = Pixel
+            pixel_class = mappables.Pixel
+        if shape_class is None:
+            shape_class = mappables.Shape
         self.pixel_class = pixel_class
         self.atlas.update_annex({self.pixel_class.__name__: self})
 
         # Shapes labels
-        black_labeled, black_labels, white_labeled, white_labels = binary_label_ndarray(image)
+        black_labeled, black_labels, white_labeled, white_labels = at.binary_label_ndarray(image)
 
         # Init Pixels; then stack and assign pixel neighbors.
-        np_pixels = quad_neighbor_pixels_from_ndarray(image, pixel_class=pixel_class)
+        np_pixels = at.quad_neighbor_pixels_from_ndarray(image, pixel_class)
 
         # Extract objects/pixels to lists
         shape_map = Morphographer(
-            self.atlas, *binary_shapes_from_labels(
-                np_pixels, black_labeled, black_labels, white_labeled, white_labels, self.atlas, shape_class=shape_class
+            self.atlas, *at.binary_shapes_from_labels(
+                np_pixels, black_labeled, black_labels, white_labeled, white_labels, shape_class, self.atlas
             ), shape_class=shape_class
         )
         self.pixels = np_pixels.tolist()
@@ -341,7 +345,7 @@ class Morphographer(object):
     def __init__(self, atlas, *color_separated_shapes, shape_class=None, **__):
         self.atlas = atlas
         if shape_class is None:
-            shape_class = Shape
+            shape_class = mappables.Shape
         self.shape_class = shape_class
         self.atlas.update_annex({self.shape_class.__name__: self})
         self.shapes = {same_color_shapes[0].color: set(same_color_shapes)
@@ -379,7 +383,7 @@ class Morphographer(object):
         return self.shapes.values()
 
     def set_primary_shapes(self):
-        self.primary_shape.update({shape_color_key: largest_shape_of_set(shapes_of_color)
+        self.primary_shape.update({shape_color_key: at.largest_shape_of_set(shapes_of_color)
                                    for shape_color_key, shapes_of_color in self.items()})
 
     def same_color_shapes_above_shape(self, shape):
@@ -402,9 +406,9 @@ class Morphographer(object):
         new_shapes = set()
         for pixel in original_pixels:
             if pixel in check_pixels:
-                connected = get_connected_pixels_of_set_from_pixel(pixel, check_pixels)
+                connected = at.get_connected_pixels_of_set_from_pixel(pixel, check_pixels)
                 check_pixels.difference_update(connected)
-                new_shape = Shape(connected, self.atlas)
+                new_shape = mappables.Shape(connected, self.atlas)
                 print("Number of pixels in new shape: {}".format(len(connected)))
                 if (shape_validator(new_shape) if shape_validator is not None
                         else len(new_shape.pixels) > self.minimum_resegment_pixels):
@@ -449,7 +453,7 @@ class Morphographer(object):
     def __call__(self, *args, **kwargs):
         return self.row_map(*args, **kwargs)
 
-    @redirectable
+    @container_dispatch
     def __sub__(self, other):
         try:
             print(type(other))
@@ -459,7 +463,7 @@ class Morphographer(object):
             raise
         return self
 
-    @redirectable
+    @container_dispatch
     def __add__(self, other):
         try:
             self[other].add(other)
@@ -468,7 +472,7 @@ class Morphographer(object):
             raise
         return self
 
-    @redirectable
+    @container_dispatch
     def __matmul__(self, other):
         try:
             self.refresh_surrounding_shapes_for(other)
@@ -476,16 +480,16 @@ class Morphographer(object):
             raise
         return self
 
-    @redirectable
+    @container_dispatch
     def __rmatmul__(self, other):
         # if not self._instance_dispatch(other, lambda x, y: y @ x):
-        if hasattr(other, get_function_name()):
+        if hasattr(other, at.get_function_name()):
             other @ self
         else:
             raise TypeError("Unknown instance {} being mapped by {}.".format(other, self))
         return other
 
-    @redirectable
+    @container_dispatch
     def __mod__(self, other):
         try:
             self.reset_surrounding_shapes_for(other)
@@ -493,7 +497,7 @@ class Morphographer(object):
             raise
         return self
 
-    @redirectable
+    @container_dispatch
     def __truediv__(self, other):
         try:
             self.divide_shape(other)
@@ -502,7 +506,7 @@ class Morphographer(object):
         return self
 
     # iter_results_post_processor=lambda results: max(results, key=lambda x: results.count(x))
-    @redirectable(
+    @container_dispatch(
         iter_results_post_processor=lambda results: [y for x, y in enumerate(results) if results.index(y) == x]
     )
     def __getitem__(self, key):
@@ -518,7 +522,7 @@ class Morphographer(object):
                 except (TypeError, IndexError, KeyError, AttributeError):
                     raise
 
-    @redirectable(iter_results_post_processor=lambda results: all(results))
+    @container_dispatch(iter_results_post_processor=lambda results: all(results))
     def __contains__(self, item):
         if isinstance(item, type(self.shape_class)):
             return item in self[item.color]
@@ -535,7 +539,7 @@ class Morphographer(object):
     def __bool__(self):
         return any((shapes for shapes in self))
 
-    @redirectable
+    @container_dispatch
     def __delitem__(self, key):
         try:
             self[key].discard(key)
@@ -557,7 +561,7 @@ class Morphographer(object):
 
     def __str__(self):
         return ("<Morphographer Object {} | {} total shapes | ".format(id(self), len(self.all_shapes))
-                + ' | '.join(("{} {} shapes".format(len(shapes_of_color), color_to_string(color_key))
+                + ' | '.join(("{} {} shapes".format(len(shapes_of_color), at.color_to_string(color_key))
                               for color_key, shapes_of_color in self.items()))
                 + ">")
 
@@ -573,7 +577,7 @@ class RedirectTester(object):
     def __init__(self, values):
         self.values = values
 
-    @redirectable(
+    @container_dispatch(
         iter_results_post_processor=lambda results: [y for x, y in enumerate(results) if results.index(y) == x]
     )
     def __getitem__(self, item):
@@ -630,7 +634,6 @@ def redirectable_test():
     print(outer_tests[0].index(1))
     for test_outer_values in outer_tests:
         print(test_object[test_outer_values])
-    sys.exit(0)
 
 
 if __name__ == "__main__":
@@ -644,4 +647,3 @@ if __name__ == "__main__":
         len(test_space[0]), len(test_space[1])))
     print(test_space)
     test_resegment(test_space)
-    sys.exit(0)
