@@ -1,46 +1,102 @@
 import functools
+from types import FunctionType
+import inspect
 
 
 _ACTIVE_CLASS = "_active_descriptor"
-_PROTECTED_SELF = "_self_pointer"
+_PROTECTED_SELF = "_protected_self"
+_DEFAULT_NO_DECORATES = {"__new__", "__init__", "__getattr__", "__delattr__", "__getattribute__", "__del__",
+                         "queen", "drone"}
 
 
-def resistance_is_futile(_wrapped_new=None, *, default_class=None):
+def resist(f):
+    f._protect_self_reference = False
+    return f
+
+
+def assimilate(_wrapped_class=None, *, default_class=None):
     if default_class is None:
         default_class = ShapeDescriptor
 
-    def existing_collective_conformer(wrapped_new):
-        @functools.wraps(wrapped_new)
-        def new_borg_pod_member(cls, existing_object=None, *, _base_class=default_class):
-            if existing_object is None:
-                existing_object = _base_class({})
-            return wrapped_new(cls, existing_object)
-        return new_borg_pod_member
+    def should_decorate(attr, value):
+        return (attr not in _DEFAULT_NO_DECORATES
+                and isinstance(value, FunctionType)
+                and getattr(value, "_protect_self_reference", True))
 
-    if _wrapped_new is None:
-        return existing_collective_conformer
-    return existing_collective_conformer(_wrapped_new)
+    def method_decorator(wrapped_method):
+        @functools.wraps(wrapped_method)
+        def method_wrapper(self, *args, **kwargs):
+            print("SELF: {}".format(self))
+            ret = wrapped_method(self, *args, **kwargs)
+            print("RET: {}".format(ret))
+            if ret is self:
+                print("SUBSTITUTING: {}".format(self.queen))
+                return self.queen
+            return ret
+        return method_wrapper
 
+    def borg_pod_safe_set(wrapped_method):
+        @functools.wraps(wrapped_method)
+        def setter_wrapper(self, attribute, value):
+            if should_decorate(attribute, value):
+                value = method_decorator(value)
+            super(self.__class__, self).__setattr__(attribute, value)
+        return setter_wrapper
 
-def assimilate(wrapped_class):
-    @resistance_is_futile
-    def _borg_pod(cls, existing_object, *args, **kwargs):
-        return cls._assimilate_into_object_id(existing_object, *args, **kwargs)
+    def borg_pod_decorator(wrapped_class):
+        @functools.wraps(wrapped_class)
+        def pod_wrapper(*c_args, **c_kwargs):
+            def _setup_pod_in_new(wrapped_new):
+                @functools.wraps(wrapped_new)
+                def new_wrapper(cls, *args, queen=None, _base_class=default_class, **kwargs):
+                    if queen is None:
+                        for ids, arg in enumerate(args):
+                            if isinstance(arg, _base_class):
+                                queen = arg
+                                args = args[:ids] + args[ids + 1:]
+                                break
+                        else:
+                            queen = _base_class({})
+                    print("args: {}".format(args))
+                    print("kwargs: {}".format(kwargs))
+                    shared_state = queen.__dict__
+                    new_object = wrapped_new(cls)
+                    new_object.__init__(shared_state, *args, **kwargs)
+                    return queen
+                return new_wrapper
 
-    def _add_distinctiveness(self, shared_state, *args, **kwargs):
-        super(self.__class__, self).__init__(shared_state)
-        self._active_descriptor = self
-        __protected_init__(self, *args, **kwargs)
+            def _assimilate_in_init(wrapped_init):
+                @functools.wraps(wrapped_init)
+                def init_wrapper(self, shared_state, *args, **kwargs):
+                    self.__dict__ = shared_state
+                    self._active_descriptor = self
+                    self.queen = self._protected_self.queen
+                    self.drone = self._protected_self.drone
+                    return wrapped_init(self, *args, **kwargs)
+                return init_wrapper
 
-    wrapped_class.__new__ = _borg_pod
+            # Instance method self-reference-return protector
+            for attribute, method in wrapped_class.__dict__.copy().items():
+                if should_decorate(attribute, method):
+                    setattr(wrapped_class, attribute, method_decorator(method))
+            setattr(wrapped_class, '__setattr__', borg_pod_safe_set(wrapped_class.__setattr__))
 
-    wrapped_class.__init__, __protected_init__ = _add_distinctiveness, wrapped_class.__init__
-    return wrapped_class
+            # __new__ self-reference-return protector & init setup
+            wrapped_class.__new__ = _setup_pod_in_new(wrapped_class.__new__)
+            wrapped_class.__init__ = _assimilate_in_init(wrapped_class.__init__)
+
+            return wrapped_class(*c_args, **c_kwargs)
+        return pod_wrapper
+
+    if _wrapped_class is None:
+        return borg_pod_decorator
+    return borg_pod_decorator(_wrapped_class)
 
 
 class ShapeDescriptor(object):
+    _base_borgs = set()
+
     def __init__(self, _shared_state=None):
-        print("BASE INIT CALLED")
         self.__dict__ = _shared_state if _shared_state is not None else {}
         self._active_descriptor = self
         if _PROTECTED_SELF not in self.__dict__:
@@ -50,34 +106,30 @@ class ShapeDescriptor(object):
     def queen(self):
         return self._protected_self
 
-    @classmethod
-    def _assimilate_into_object_id(cls, existing_object, *args, **kwargs):
-        shared_state = existing_object.__dict__
-        hidden_instance = super(cls, cls).__new__(cls)
-        hidden_instance.__init__(shared_state, *args, **kwargs)
-        return existing_object
-
-    def base_self_method(self):
-        return self
+    @property
+    def drone(self):
+        return self._active_descriptor
 
     def __getattr__(self, name):
-        print(name)
         if _ACTIVE_CLASS in self.__dict__:
             active_class = self.__dict__[_ACTIVE_CLASS]
+            if active_class == self.__dict__[_PROTECTED_SELF]:
+                raise AttributeError("Base borg-pod does not have attribute {}.".format(name))
             if hasattr(active_class, name):
                 return getattr(active_class, name)
-            if name in self.__dict__:
-                return self.__dict__[name]
-            raise AttributeError
-        elif name in self.__dict__:
-            return self.__dict__[name]
-        else:
-            raise AttributeError
+        raise AttributeError("Base borg-pod does not have attribute {}.".format(name))
+
+
+class ShapeDescriptorB(ShapeDescriptor):
+    def __init__(self, *args, **kwargs):
+        super(self.__class__, self).__init__(*args, **kwargs)
 
 
 @assimilate
-class Circle(ShapeDescriptor):
-    def __init__(self):
+class Circle(object):
+    def __init__(self, *args, **kwargs):
+        super(self.__class__, self).__init__(*args, **kwargs)
+        self.shape_type = "circle"
         print("CIRCLE INIT CALLED")
 
     @staticmethod
@@ -85,12 +137,15 @@ class Circle(ShapeDescriptor):
         print("I AM CIRCLE.")
 
     def self_method(self):
+        print(self.shape_type)
         return self
 
 
 @assimilate
-class AlphaNumeric(ShapeDescriptor):
-    def __init__(self):
+class AlphaNumeric(object):
+    def __init__(self, *args, **kwargs):
+        super(self.__class__, self).__init__(*args, **kwargs)
+        self.shape_type = "char"
         print("CHAR INIT CALLED")
 
     @staticmethod
@@ -98,19 +153,24 @@ class AlphaNumeric(ShapeDescriptor):
         print("I AM CHARACTER.")
 
     def self_method(self):
+        print(self.shape_type)
         return self
 
 
 @assimilate
-class Punctuation(ShapeDescriptor):
-    def __init__(self):
+class Punctuation(object):
+    def __init__(self, *args, **kwargs):
+        super(self.__class__, self).__init__(*args, **kwargs)
+        self.shape_type = "punct"
         print("PUNCT INIT CALLED")
 
     @staticmethod
     def info():
         print("I AM PUNCTUATION.")
 
+    @resist
     def self_method(self):
+        print(self.shape_type)
         return self
 
 
@@ -120,10 +180,12 @@ def collective_test():
     object_b = ShapeDescriptor()
     print("Is same object?")
     print(object_b is object_a)
+    print("Translating to Circle.")
     object_c = Circle(object_b)
+    print("Circle done.")
     print("New info:")
     object_c.info()
-    object_b.info()
+    # object_b.info()
     print("Is same object?")
     print(object_b is object_c)
     object_d = AlphaNumeric(object_c)
@@ -153,10 +215,10 @@ def collective_test():
     print(new_d is new_b)
     print(new_c is new_b)
     print("What about the base?")
-    og_b1 = object_b.base_self_method()
-    og_b2 = new_b.base_self_method()
-    og_d1 = object_d.base_self_method()
-    og_d2 = new_d.base_self_method()
+    og_b1 = object_b.drone
+    og_b2 = new_b.drone
+    og_d1 = object_d.drone
+    og_d2 = new_d.drone
     print(og_b1)
     print(og_b2)
     print(og_d1)
