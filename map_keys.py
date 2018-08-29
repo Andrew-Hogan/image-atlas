@@ -1,17 +1,18 @@
 import functools
 from types import FunctionType
-import inspect
 
 
 _ACTIVE_CLASS = "_active_descriptor"
 _PROTECTED_SELF = "_protected_self"
-_DEFAULT_NO_DECORATES = {"__new__", "__init__", "__getattr__", "__delattr__", "__getattribute__", "__del__",
-                         "queen", "drone"}
+_DEFAULT_NO_DECORATES = {
+    "__new__", "__init__", "__getattr__", "__delattr__", "__getattribute__", "__del__", "queen", "drone", "__setattr__",
+    "__call__", "__dict__"
+}
 
 
-def resist(f):
-    f._protect_self_reference = False
-    return f
+#def resist(f):
+#    f._protect_self_reference = False
+#    return f
 
 
 def assimilate(_wrapped_class=None, *, default_class=None):
@@ -19,9 +20,10 @@ def assimilate(_wrapped_class=None, *, default_class=None):
         default_class = ShapeDescriptor
 
     def should_decorate(attr, value):
-        return (attr not in _DEFAULT_NO_DECORATES
-                and isinstance(value, FunctionType)
-                and getattr(value, "_protect_self_reference", True))
+        return (
+            attr not in _DEFAULT_NO_DECORATES and isinstance(value, FunctionType)
+            and getattr(value, "_protect_self_reference", True)
+        )
 
     def method_decorator(wrapped_method):
         @functools.wraps(wrapped_method)
@@ -38,7 +40,9 @@ def assimilate(_wrapped_class=None, *, default_class=None):
     def borg_pod_safe_set(wrapped_method):
         @functools.wraps(wrapped_method)
         def setter_wrapper(self, attribute, value):
+            print("SELF: {} ATTR: {} VAL: {}".format(self, attribute, value))
             if should_decorate(attribute, value):
+                print("\n____\nAFFECTED\n____")
                 value = method_decorator(value)
             super(self.__class__, self).__setattr__(attribute, value)
         return setter_wrapper
@@ -48,7 +52,10 @@ def assimilate(_wrapped_class=None, *, default_class=None):
         def pod_wrapper(*c_args, **c_kwargs):
             def _setup_pod_in_new(wrapped_new):
                 @functools.wraps(wrapped_new)
-                def new_wrapper(cls, *args, queen=None, _base_class=default_class, **kwargs):
+                def new_wrapper(cls, *args, queen=None, _base_class=None, **kwargs):
+                    if _base_class is None:
+                        _base_class = default_class
+                    print(_base_class)
                     if queen is None:
                         for ids, arg in enumerate(args):
                             if isinstance(arg, _base_class):
@@ -57,8 +64,6 @@ def assimilate(_wrapped_class=None, *, default_class=None):
                                 break
                         else:
                             queen = _base_class({})
-                    print("args: {}".format(args))
-                    print("kwargs: {}".format(kwargs))
                     shared_state = queen.__dict__
                     new_object = wrapped_new(cls)
                     new_object.__init__(shared_state, *args, **kwargs)
@@ -68,6 +73,8 @@ def assimilate(_wrapped_class=None, *, default_class=None):
             def _assimilate_in_init(wrapped_init):
                 @functools.wraps(wrapped_init)
                 def init_wrapper(self, shared_state, *args, **kwargs):
+                    print(self)
+                    print(shared_state)
                     self.__dict__ = shared_state
                     self._active_descriptor = self
                     self.queen = self._protected_self.queen
@@ -78,12 +85,16 @@ def assimilate(_wrapped_class=None, *, default_class=None):
             # Instance method self-reference-return protector
             for attribute, method in wrapped_class.__dict__.copy().items():
                 if should_decorate(attribute, method):
-                    setattr(wrapped_class, attribute, method_decorator(method))
-            setattr(wrapped_class, '__setattr__', borg_pod_safe_set(wrapped_class.__setattr__))
+                    print("{} wrapped by method dec.".format(attribute))
+                    setattr(wrapped_class, attribute, method_decorator(wrapped_class.__dict__[attribute]))
 
             # __new__ self-reference-return protector & init setup
-            wrapped_class.__new__ = _setup_pod_in_new(wrapped_class.__new__)
-            wrapped_class.__init__ = _assimilate_in_init(wrapped_class.__init__)
+            setattr(wrapped_class, '__init__', _assimilate_in_init(wrapped_class.__init__))
+            setattr(wrapped_class, '__new__', _setup_pod_in_new(wrapped_class.__new__))
+
+            setattr(wrapped_class, '__setattr__', borg_pod_safe_set(wrapped_class.__setattr__))
+            print(c_args)
+            print(c_kwargs)
 
             return wrapped_class(*c_args, **c_kwargs)
         return pod_wrapper
@@ -120,11 +131,6 @@ class ShapeDescriptor(object):
         raise AttributeError("Base borg-pod does not have attribute {}.".format(name))
 
 
-class ShapeDescriptorB(ShapeDescriptor):
-    def __init__(self, *args, **kwargs):
-        super(self.__class__, self).__init__(*args, **kwargs)
-
-
 @assimilate
 class Circle(object):
     def __init__(self, *args, **kwargs):
@@ -137,15 +143,16 @@ class Circle(object):
         print("I AM CIRCLE.")
 
     def self_method(self):
-        print(self.shape_type)
         return self
+
+    def __str__(self):
+        return "<{} object #{} linked to {} #{}.>".format(self.drone.__class__, id(self.drone), self.queen.__class__, id(self.queen))
 
 
 @assimilate
 class AlphaNumeric(object):
     def __init__(self, *args, **kwargs):
         super(self.__class__, self).__init__(*args, **kwargs)
-        self.shape_type = "char"
         print("CHAR INIT CALLED")
 
     @staticmethod
@@ -153,7 +160,6 @@ class AlphaNumeric(object):
         print("I AM CHARACTER.")
 
     def self_method(self):
-        print(self.shape_type)
         return self
 
 
@@ -161,17 +167,46 @@ class AlphaNumeric(object):
 class Punctuation(object):
     def __init__(self, *args, **kwargs):
         super(self.__class__, self).__init__(*args, **kwargs)
-        self.shape_type = "punct"
         print("PUNCT INIT CALLED")
 
     @staticmethod
     def info():
         print("I AM PUNCTUATION.")
 
-    @resist
     def self_method(self):
-        print(self.shape_type)
         return self
+
+
+def compare_seq(sequence, sequence_2=None):
+    if sequence_2 is None:
+        for ob_a, ob_b in zip(sequence, sequence[1::] + [sequence[0]]):
+            print("{}: {} is {}".format(ob_a is ob_b, ob_a, ob_b))
+    else:
+        for ob_a, ob_b in zip(sequence, sequence_2):
+            print("{}: {} is {}".format(ob_a is ob_b, ob_a, ob_b))
+
+
+def convert_seq(sequence, new_class):
+    return [new_class(obj) for obj in sequence]
+
+
+def main(num_objects=6):
+    test_objects_original = [ShapeDescriptor() for _ in range(num_objects)]
+    print(test_objects_original)
+    print("Is equal to all?")
+    compare_seq(test_objects_original)
+
+    print("To Circle-")
+    test_objects_circ = convert_seq(test_objects_original, Circle)
+    print(test_objects_circ)
+    print("Is equal to all?")
+    compare_seq(test_objects_circ)
+    print("Is equal to old version?")
+    compare_seq(test_objects_circ, test_objects_original)
+
+
+
+
 
 
 def collective_test():
@@ -196,9 +231,6 @@ def collective_test():
     print("Is same object(s)?")
     print(object_d is object_c)
     print(object_d is object_b)
-    print(object_c is object_b)
-    print("Is untouched original different or same?")
-    print(object_d is object_a)
     print("What if we return self?")
     print("Printing Pre-Objects:")
     print(object_b)
@@ -213,7 +245,20 @@ def collective_test():
     print("Is same?")
     print(new_d is new_c)
     print(new_d is new_b)
-    print(new_c is new_b)
+    print("Let's make them punctuation.")
+    punc_c = Punctuation(new_c)
+    punc_d = Punctuation(new_d)
+    print(punc_c, punc_d)
+    print("What if we return self with an instance method decorated with @resist?")
+    # bad_b = punc_b.self_method()
+    bad_c = punc_c.self_method()
+    bad_d = punc_d.self_method()
+    # print(bad_b)
+    print(bad_c)
+    print(bad_d)
+    print("Are those the same?")
+    # print(bad_b is bad_c)
+    print(bad_c is bad_d)
     print("What about the base?")
     og_b1 = object_b.drone
     og_b2 = new_b.drone
@@ -227,9 +272,6 @@ def collective_test():
     print(og_b1 is og_b2)
     print(og_d1 is og_d2)
     print(og_b1 is og_d1)
-    print(og_b2 is og_d2)
-    print(og_b2 is og_d1)
-    print(og_b1 is og_d2)
     print("What if we return the protected self?")
     real_b1 = og_b1.queen
     real_b2 = og_b2.queen
@@ -247,4 +289,5 @@ def collective_test():
 
 
 if __name__ == "__main__":
-    collective_test()
+    # collective_test()
+    main()
