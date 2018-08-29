@@ -4,48 +4,65 @@ from types import FunctionType
 
 _ACTIVE_CLASS = "_active_descriptor"
 _PROTECTED_SELF = "_protected_self"
-_DEFAULT_NO_DECORATES = {
+_SHOULD_NOT_DECORATE_FLAG = "_protect_self_reference"
+DEFAULT_NO_DECORATES_ON_ANY_IN_INHERITANCE_TREE = {
     "__new__", "__init__", "__getattr__", "__delattr__", "__getattribute__", "__del__", "queen", "drone", "__setattr__",
-    "__call__", "__dict__"
+    "__dict__", "__str__", "__repr__", "__set__", "__eq__", "__hash__", "__init__", "__new__"
+}
+DEFAULT_FORCED_DECORATES_ON_DECORATED_CLASS_ONLY = {
+    "__eq__", "__hash__", "__init__", "__new__", "__setattr__"
 }
 
 
-#def resist(f):
-#    f._protect_self_reference = False
-#    return f
+def resist(this_function):
+    this_function._protect_self_reference = False
+    return this_function
+
+
+def _should_protect_self_access(attr, value):
+    return (
+        attr not in DEFAULT_NO_DECORATES_ON_ANY_IN_INHERITANCE_TREE and isinstance(value, FunctionType)
+        and getattr(value, "_protect_self_reference", True)
+    )
+
+
+def _safe_self_access_decorator(wrapped_method):
+    @functools.wraps(wrapped_method)
+    def method_wrapper(self, *args, **kwargs):
+        if hasattr(self, "queen"):
+            return wrapped_method(self.queen, *args, **kwargs)
+        return wrapped_method(self, *args, **kwargs)
+    return method_wrapper
+
+
+def _borg_pod_set_with_safe_self_access(wrapped_method):
+    @functools.wraps(wrapped_method)
+    def setter_wrapper(self, attribute, value):
+        if _should_protect_self_access(attribute, value):
+            print("WRAPPING IT: {}".format(attribute))
+            value = _safe_self_access_decorator(value)
+        super(self.__class__, self).__setattr__(attribute, value)
+    return setter_wrapper
 
 
 def assimilate(_wrapped_class=None, *, default_class=None):
+    """
+
+    Assumptions:
+        1. That any of the attributes set by this wrapper (self.queen, self.drone, _protected_self, _active_descriptor,
+            and _protect_self_reference [the last is on methods]) shall not be changed except through the auto-interface
+            (@assimilate, @resist) offered by this toolkit.
+        2. That any class to be decorated will not have its subclasses @assimilate decorated as well, as they will be
+            auto-decorated.
+
+    :param _wrapped_class:
+    :param default_class:
+    :return:
+    """
     if default_class is None:
         default_class = ShapeDescriptor
 
-    def should_decorate(attr, value):
-        return (
-            attr not in _DEFAULT_NO_DECORATES and isinstance(value, FunctionType)
-            and getattr(value, "_protect_self_reference", True)
-        )
-
-    def method_decorator(wrapped_method):
-        @functools.wraps(wrapped_method)
-        def method_wrapper(self, *args, **kwargs):
-            print("SELF: {}".format(self))
-            ret = wrapped_method(self, *args, **kwargs)
-            print("RET: {}".format(ret))
-            if ret is self:
-                print("SUBSTITUTING: {}".format(self.queen))
-                return self.queen
-            return ret
-        return method_wrapper
-
-    def borg_pod_safe_set(wrapped_method):
-        @functools.wraps(wrapped_method)
-        def setter_wrapper(self, attribute, value):
-            print("SELF: {} ATTR: {} VAL: {}".format(self, attribute, value))
-            if should_decorate(attribute, value):
-                print("\n____\nAFFECTED\n____")
-                value = method_decorator(value)
-            super(self.__class__, self).__setattr__(attribute, value)
-        return setter_wrapper
+    this_class_wrapped_canary = []
 
     def borg_pod_decorator(wrapped_class):
         @functools.wraps(wrapped_class)
@@ -55,7 +72,6 @@ def assimilate(_wrapped_class=None, *, default_class=None):
                 def new_wrapper(cls, *args, queen=None, _base_class=None, **kwargs):
                     if _base_class is None:
                         _base_class = default_class
-                    print(_base_class)
                     if queen is None:
                         for ids, arg in enumerate(args):
                             if isinstance(arg, _base_class):
@@ -73,8 +89,6 @@ def assimilate(_wrapped_class=None, *, default_class=None):
             def _assimilate_in_init(wrapped_init):
                 @functools.wraps(wrapped_init)
                 def init_wrapper(self, shared_state, *args, **kwargs):
-                    print(self)
-                    print(shared_state)
                     self.__dict__ = shared_state
                     self._active_descriptor = self
                     self.queen = self._protected_self.queen
@@ -82,23 +96,49 @@ def assimilate(_wrapped_class=None, *, default_class=None):
                     return wrapped_init(self, *args, **kwargs)
                 return init_wrapper
 
+            def _modify_methods_for_self_reference(this_class):
+                for c_attribute, c_method in this_class.__dict__.copy().items():
+                    if _should_protect_self_access(c_attribute, c_method):
+                        print("{} wrapped by method dec.".format(c_attribute))
+                        setattr(this_class, c_attribute, _safe_self_access_decorator(this_class.__dict__[c_attribute]))
+                        c_method._protect_self_reference = False
+
+            if this_class_wrapped_canary:
+                return wrapped_class(*c_args, **c_kwargs)
+
             # Instance method self-reference-return protector
-            for attribute, method in wrapped_class.__dict__.copy().items():
-                if should_decorate(attribute, method):
-                    print("{} wrapped by method dec.".format(attribute))
-                    setattr(wrapped_class, attribute, method_decorator(wrapped_class.__dict__[attribute]))
+            _modify_methods_for_self_reference(wrapped_class)
 
-            # __new__ self-reference-return protector & init setup
+            setattr(wrapped_class, '__new__', _setup_pod_in_new(wrapped_class.__new__))  # Check for pre-set?
+            wrapped_class.__new__._protect_self_reference = False
             setattr(wrapped_class, '__init__', _assimilate_in_init(wrapped_class.__init__))
-            setattr(wrapped_class, '__new__', _setup_pod_in_new(wrapped_class.__new__))
+            wrapped_class.__init__._protect_self_reference = False
+            setattr(wrapped_class, '__hash__', lambda x: hash(x.queen))
+            wrapped_class.__hash__._protect_self_reference = False
+            setattr(wrapped_class, '__eq__', lambda x, y: x.queen is y.queen if hasattr(y, "queen") else False)
+            wrapped_class.__eq__._protect_self_reference = False
+            setattr(wrapped_class, '__setattr__', _borg_pod_set_with_safe_self_access(wrapped_class.__setattr__))
+            wrapped_class.__setattr__._protect_self_reference = False
 
-            setattr(wrapped_class, '__setattr__', borg_pod_safe_set(wrapped_class.__setattr__))
-            print(c_args)
-            print(c_kwargs)
+            ancestors = wrapped_class.mro()
+            for ancestor in ancestors[1:]:
+                print(ancestor)
+                if ancestor is not object:
+                    _modify_methods_for_self_reference(ancestor)
 
+            this_class_wrapped_canary.append(None)
+            print("A")
+            print(wrapped_class)
+            print(type(wrapped_class))
             return wrapped_class(*c_args, **c_kwargs)
+        print("B")
+        print(pod_wrapper)
+        print(type(pod_wrapper))
         return pod_wrapper
 
+    print("C")
+    print(borg_pod_decorator)
+    print(type(borg_pod_decorator))
     if _wrapped_class is None:
         return borg_pod_decorator
     return borg_pod_decorator(_wrapped_class)
@@ -124,57 +164,112 @@ class ShapeDescriptor(object):
     def __getattr__(self, name):
         if _ACTIVE_CLASS in self.__dict__:
             active_class = self.__dict__[_ACTIVE_CLASS]
-            if active_class == self.__dict__[_PROTECTED_SELF]:
+            if active_class is self.__dict__[_PROTECTED_SELF]:
                 raise AttributeError("Base borg-pod does not have attribute {}.".format(name))
             if hasattr(active_class, name):
                 return getattr(active_class, name)
         raise AttributeError("Base borg-pod does not have attribute {}.".format(name))
 
+    def __str__(self):
+        if self._protected_self is not self._active_descriptor:
+            return self._active_descriptor.__str__()
+        return "<Unbound {} object #{}>".format(self._protected_self.__class__.__name__, id(self._protected_self))
+
+    __repr__ = __str__
+
+    def __hash__(self):
+        return hash((self.__class__.__name__, id(self)))
+
+    def __eq__(self, other):
+        return hash(self) == hash(other)
+
+
+class PerfectGreekInfluencedChalkDrawingOfFace(object):
+    def __init__(self):
+        self.shape_type = "pre-circle"
+
+    def self_method(self):
+        return self
+
 
 @assimilate
-class Circle(object):
-    def __init__(self, *args, **kwargs):
-        super(self.__class__, self).__init__(*args, **kwargs)
+class Circle(PerfectGreekInfluencedChalkDrawingOfFace):
+    def __init__(self):
+        super(self.__class__, self).__init__()
         self.shape_type = "circle"
-        print("CIRCLE INIT CALLED")
 
     @staticmethod
     def info():
         print("I AM CIRCLE.")
 
-    def self_method(self):
-        return self
+    # def self_method(self):
+    #     return self
 
     def __str__(self):
-        return "<{} object #{} linked to {} #{}.>".format(self.drone.__class__, id(self.drone), self.queen.__class__, id(self.queen))
+        if hasattr(self, "drone"):
+            return "<{} object #{} linked to {} #{}>".format(
+                self.drone.__class__.__name__, id(self.drone), self.queen.__class__.__name__, id(self.queen)
+            )
+        return "<Unassimilated {} object #{}>".format(self.__class__.__name__, id(self))
+
+    __repr__ = __str__
+
+
+print("D")
+print(Circle)
+print(type(Circle))
+
+
+class Ellipse(object):
+    def __init__(self):
+        super(self.__class__, self).__init__()
+        self.shape_type = "ellipse"
 
 
 @assimilate
 class AlphaNumeric(object):
-    def __init__(self, *args, **kwargs):
-        super(self.__class__, self).__init__(*args, **kwargs)
-        print("CHAR INIT CALLED")
+    def __init__(self):
+        self.shape_type = "character"
 
     @staticmethod
     def info():
         print("I AM CHARACTER.")
 
     def self_method(self):
+        self.info()
         return self
+
+    def __str__(self):
+        if hasattr(self, "drone"):
+            return "<{} object #{} linked to {} #{}>".format(
+                self.drone.__class__.__name__, id(self.drone), self.queen.__class__.__name__, id(self.queen)
+            )
+        return "<Unassimilated {} object #{}>".format(self.__class__.__name__, id(self))
+
+    __repr__ = __str__
 
 
 @assimilate
 class Punctuation(object):
-    def __init__(self, *args, **kwargs):
-        super(self.__class__, self).__init__(*args, **kwargs)
-        print("PUNCT INIT CALLED")
+    def __init__(self):
+        self.shape_type = "punctuation"
 
     @staticmethod
     def info():
         print("I AM PUNCTUATION.")
 
+    @resist
     def self_method(self):
         return self
+
+    def __str__(self):
+        if hasattr(self, "drone"):
+            return "<{} object #{} linked to {} #{}>".format(
+                self.drone.__class__.__name__, id(self.drone), self.queen.__class__.__name__, id(self.queen)
+            )
+        return "<Unassimilated {} object #{}>".format(self.__class__.__name__, id(self))
+
+    __repr__ = __str__
 
 
 def compare_seq(sequence, sequence_2=None):
@@ -186,108 +281,150 @@ def compare_seq(sequence, sequence_2=None):
             print("{}: {} is {}".format(ob_a is ob_b, ob_a, ob_b))
 
 
+def assert_seq(sequence, sequence_2=None, *, assert_val=True):
+    if sequence_2 is None:
+        for ob_a, ob_b in zip(sequence, sequence[1::] + [sequence[0]]):
+            assert (ob_a is ob_b) == assert_val, "Assertion that {} is {} did not match provided value of {}.".format(
+                ob_a, ob_b, assert_val
+            )
+    else:
+        for ob_a, ob_b in zip(sequence, sequence_2):
+            assert (ob_a is ob_b) == assert_val, "Assertion that {} is {} did not match provided value of {}.".format(
+                ob_a, ob_b, assert_val
+            )
+
+
 def convert_seq(sequence, new_class):
     return [new_class(obj) for obj in sequence]
 
 
-def main(num_objects=6):
+def printable_comparisons_demo(num_objects=6):
     test_objects_original = [ShapeDescriptor() for _ in range(num_objects)]
-    print(test_objects_original)
     print("Is equal to all?")
     compare_seq(test_objects_original)
 
-    print("To Circle-")
-    test_objects_circ = convert_seq(test_objects_original, Circle)
-    print(test_objects_circ)
-    print("Is equal to all?")
-    compare_seq(test_objects_circ)
+    print("\nTo Circle-")
+    test_objects_circle = convert_seq(test_objects_original, Circle)
+    print("Are they unique objects?")
+    compare_seq(test_objects_circle)
     print("Is equal to old version?")
-    compare_seq(test_objects_circ, test_objects_original)
+    compare_seq(test_objects_circle, test_objects_original)
+
+    print("\nTo Characters-")
+    test_objects_characters = convert_seq(test_objects_circle, AlphaNumeric)
+    print("Are they unique objects?")
+    compare_seq(test_objects_characters)
+    print("Is equal to circle list?")
+    compare_seq(test_objects_characters, test_objects_circle)
+    print("Is equal to old version?")
+    compare_seq(test_objects_characters, test_objects_original)
+
+    print("\n____\nWhat if we return self from a method?\n")
+    self_list_protected = [obj.self_method() for obj in test_objects_characters]
+    print("'self' is automatically converted to the queen for consistency!")
+    print("Do they all evaluate as the same?")
+    compare_seq(self_list_protected)
+    print("Does it still evaluate as the same as the previous characters list?")
+    compare_seq(self_list_protected, test_objects_characters)
+    print("\nLet's try converting to a class with a @resist decorated method returning 'self'.\n____\n")
+
+    print("To Punctuation-")
+    test_objects_punctuation = convert_seq(test_objects_characters, Punctuation)
+    print("Are they unique objects?")
+    compare_seq(test_objects_punctuation)
+    print("Is equal to character list?")
+    compare_seq(test_objects_punctuation, test_objects_characters)
+    print("Is equal to circle list?")
+    compare_seq(test_objects_punctuation, test_objects_circle)
+    print("Is equal to old version?")
+    compare_seq(test_objects_punctuation, test_objects_original)
+
+    print("\n____\nWhat if we return self from a method decorated with @resist?\n")
+    self_list_unprotected = [obj.self_method() for obj in test_objects_punctuation]
+    print("A method decorated with @resist will not convert 'self' to the queen reference. (not suggested)")
+    print("Are they unique objects?")
+    compare_seq(self_list_unprotected)
+    print("Does it still evaluate as the same as the previous punctuation list?")
+    compare_seq(self_list_unprotected, test_objects_punctuation)
+    print("\nWhat if we retrieve the drones from the previous characters list?")
+    drone_list_characters = [obj.drone for obj in test_objects_characters]
+    print("Does it evaluate as the same to the @resist self list?")
+    compare_seq(drone_list_characters, self_list_unprotected)
+    print("\nWhat if we retrieve the queen from the @resist self list?")
+    self_list_restored = [obj.queen for obj in self_list_unprotected]
+    print("Does it evaluate as the same to the original characters list?")
+    compare_seq(self_list_restored, test_objects_characters)
+    print("\nTests Complete\n____")
 
 
+def main(num_objects=6):
+    test_objects_original = [ShapeDescriptor() for _ in range(num_objects)]
+    print("Are they unique objects?")
+    assert_seq(test_objects_original, assert_val=False)
 
+    print("\nTo Circle-")
+    test_objects_circle = convert_seq(test_objects_original, Circle)
+    print("Are they unique objects?")
+    assert_seq(test_objects_circle, assert_val=False)
+    print("Is equal to old version?")
+    assert_seq(test_objects_circle, test_objects_original)
+    print("what if we return self?")
+    self_list_ambig = [obj.self_method() for obj in test_objects_circle]
+    print(self_list_ambig)
+    print("Are they equal to the old version?")
+    compare_seq(self_list_ambig, test_objects_circle)
+    print("What if we use the subclass?")
+    test_objects_undecorated_subclass = [PerfectGreekInfluencedChalkDrawingOfFace() for _ in range(num_objects)]
+    self_list_face = [obj.self_method() for obj in test_objects_undecorated_subclass]
+    print(self_list_face)
 
+    print("\nTo Characters-")
+    test_objects_characters = convert_seq(test_objects_circle, AlphaNumeric)
+    print("Are they unique objects?")
+    assert_seq(test_objects_characters, assert_val=False)
+    print("Is equal to circle list?")
+    assert_seq(test_objects_characters, test_objects_circle)
+    print("Is equal to old version?")
+    assert_seq(test_objects_characters, test_objects_original)
 
+    print("\n____\nWhat if we return self from a method?\n")
+    self_list_protected = [obj.self_method() for obj in test_objects_characters]
+    print("'self' is automatically converted to the queen for consistency!")
+    print("Are they unique objects?")
+    assert_seq(self_list_protected, assert_val=False)
+    print("Does it still evaluate as the same as the previous characters list?")
+    assert_seq(self_list_protected, test_objects_characters)
+    print("\nLet's try converting to a class with a @resist decorated method returning 'self'.\n____\n")
 
-def collective_test():
-    print("Begin test!")
-    object_a = ShapeDescriptor()
-    object_b = ShapeDescriptor()
-    print("Is same object?")
-    print(object_b is object_a)
-    print("Translating to Circle.")
-    object_c = Circle(object_b)
-    print("Circle done.")
-    print("New info:")
-    object_c.info()
-    # object_b.info()
-    print("Is same object?")
-    print(object_b is object_c)
-    object_d = AlphaNumeric(object_c)
-    print("New info:")
-    object_d.info()
-    object_c.info()
-    object_b.info()
-    print("Is same object(s)?")
-    print(object_d is object_c)
-    print(object_d is object_b)
-    print("What if we return self?")
-    print("Printing Pre-Objects:")
-    print(object_b)
-    print(object_c)
-    print(object_d)
-    new_b = object_b.self_method()
-    new_c = object_c.self_method()
-    new_d = object_d.self_method()
-    print(new_b)
-    print(new_c)
-    print(new_d)
-    print("Is same?")
-    print(new_d is new_c)
-    print(new_d is new_b)
-    print("Let's make them punctuation.")
-    punc_c = Punctuation(new_c)
-    punc_d = Punctuation(new_d)
-    print(punc_c, punc_d)
-    print("What if we return self with an instance method decorated with @resist?")
-    # bad_b = punc_b.self_method()
-    bad_c = punc_c.self_method()
-    bad_d = punc_d.self_method()
-    # print(bad_b)
-    print(bad_c)
-    print(bad_d)
-    print("Are those the same?")
-    # print(bad_b is bad_c)
-    print(bad_c is bad_d)
-    print("What about the base?")
-    og_b1 = object_b.drone
-    og_b2 = new_b.drone
-    og_d1 = object_d.drone
-    og_d2 = new_d.drone
-    print(og_b1)
-    print(og_b2)
-    print(og_d1)
-    print(og_d2)
-    print("Is same?")
-    print(og_b1 is og_b2)
-    print(og_d1 is og_d2)
-    print(og_b1 is og_d1)
-    print("What if we return the protected self?")
-    real_b1 = og_b1.queen
-    real_b2 = og_b2.queen
-    real_b3 = object_b.queen
-    real_b4 = new_b.queen
-    real_d1 = og_d1.queen
-    real_d2 = og_d2.queen
-    print(real_b1, real_b2, real_b3, real_b4, real_d1, real_d2)
-    print(real_b1 is real_b2)
-    print(real_b2 is real_b3)
-    print(real_b4 is real_b3)
-    print(real_d1 is real_b4)
-    print(real_d2 is real_d1)
-    print("Test complete!")
+    print("To Punctuation-")
+    test_objects_punctuation = convert_seq(test_objects_characters, Punctuation)
+    print("Are they unique objects?")
+    assert_seq(test_objects_punctuation, assert_val=False)
+    print("Is equal to character list?")
+    assert_seq(test_objects_punctuation, test_objects_characters)
+    print("Is equal to circle list?")
+    assert_seq(test_objects_punctuation, test_objects_circle)
+    print("Is equal to old version?")
+    assert_seq(test_objects_punctuation, test_objects_original)
+
+    print("\n____\nWhat if we return self from a method decorated with @resist?\n")
+    self_list_unprotected = [obj.self_method() for obj in test_objects_punctuation]
+    print("A method decorated with @resist will not convert 'self' to the queen reference. (not suggested)")
+    print("Are they unique objects?")
+    assert_seq(self_list_unprotected, assert_val=False)
+    print("Do they no longer evaluate as the same object from the previous punctuation list?")
+    assert_seq(self_list_unprotected, test_objects_punctuation, assert_val=False)
+    print("\nWhat if we retrieve the drones from the previous characters list?")
+    drone_list_characters = [obj.drone for obj in test_objects_characters]
+    print("Does it evaluate as the same to the @resist self list?")
+    assert_seq(drone_list_characters, self_list_unprotected)
+    print("\nWhat if we retrieve the queen from the @resist self list?")
+    self_list_restored = [obj.queen for obj in self_list_unprotected]
+    print("Does it evaluate as the same to the original characters list?")
+    assert_seq(self_list_restored, test_objects_characters)
+    print("\nTests Complete\n____")
 
 
 if __name__ == "__main__":
-    # collective_test()
+    # printable_comparisons_demo()
     main()
