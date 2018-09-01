@@ -71,7 +71,7 @@ class Morphologist(object):
             for owned_shape in shape.owned_of(inner_shape_color_key):
                 is_circular, maximum_distance = are_edge_distances_circle(owned_shape.distances_from_center)
                 if is_circular and minimum_radius <= maximum_distance <= maximum_radius:
-
+                    pass  # This meatball is being extracted from some spaghetti. Please excuse the mess.
 
     def __call__(self, *args, **kwargs):
         return self.find_circles_in(*args, **kwargs)
