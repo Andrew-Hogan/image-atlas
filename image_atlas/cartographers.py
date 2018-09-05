@@ -63,8 +63,6 @@ def annex(_wrapped_method=None, *, swap_order=False):
                 relevant_mapper = wrapped_method(self, other, *args, **kwargs)
             except KeyError:
                 raise
-            if swap_order:
-                return getattr(other, wrapped_method.__name__)(relevant_mapper, *args, **kwargs)
             return getattr(relevant_mapper, wrapped_method.__name__)(other, *args, **kwargs)
         return wrapper
 

@@ -5,7 +5,6 @@ import numpy as np
 from scipy import ndimage
 
 import ndarray_tools
-import mappables
 
 
 @property

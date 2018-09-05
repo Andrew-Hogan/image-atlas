@@ -542,3 +542,117 @@ class Shape(object):
 
     def __hash__(self):
         return hash((type(self), id(self)))
+
+
+class ContextMember(object):
+    def __init__(self, shape, parent_contexts):
+        self.shape = shape
+        self.parents = parent_contexts
+
+    @property
+    def color(self):
+        return self.shape.color
+
+    @property
+    def siblings(self):
+        return {parent.color: {sibling for sibling in parent.children.get(self.color) if sibling is not self}
+                for parent in self.parents}
+
+
+class ContextSeparator(ContextMember):
+    def __init__(self, shapes, sort_method, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.children = sort_method(shapes)
+
+    def sort(self):
+        print("Sorting {} by lax col-row.".format(self))
+
+    def classify(self):
+        print("Classifying {} by roundness.".format(self))
+
+
+class RoundedSeparator(ContextSeparator):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def sort(self):
+        print("Sorting {} by strict col-row.".format(self))
+
+    def classify(self):
+        print("Classifying {} by context.".format(self))
+
+
+class CircleSeparator(RoundedSeparator):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+
+class RectangularSeparator(ContextSeparator):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def sort(self):
+        print("Sorting {} by strict col-row.".format(self))
+
+    def classify(self):
+        print("Classifying {} by context.".format(self))
+
+
+class SquareSeparator(RectangularSeparator):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+
+class AbstractSeparator(object):
+    def __init__(self, atlas, shapes):
+        self.atlas = atlas
+        self.shapes = shapes
+
+    def sort(self):
+        raise NotImplementedError("Sort method not possible for base abstract separator {}.".format(self))
+
+
+class Column(AbstractSeparator):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def sort(self):
+        print("Sorting {} by row.".format(self))
+
+
+class Row(AbstractSeparator):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def sort(self):
+        print("Sorting {} by horizontal location.".format(self))
+
+
+class Word(Row):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def classify(self):
+        print("Classifying {} by content and context.".format(self))
+
+
+class Measurement(Word):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.total_length = None
+
+    def clarify(self):
+        print("Determining most likely reading for {}.".format(self))
+
+
+class Part(Word):
+    def __init__(self, part_number, part_count, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.number = part_number
+        self.count = part_count
+
+
+class MeasuredPart(Part):
+    def __init__(self, part_number, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.part_number = part_number
