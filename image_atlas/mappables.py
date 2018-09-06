@@ -1,3 +1,5 @@
+import borg_pod as bp
+
 import functools
 import calc_tools
 import atlas_tools as at
@@ -552,10 +554,12 @@ class Shape(object):
         return hash((type(self), id(self)))
 
 
+@bp.assimilate
 class ContextMember(object):
+    """A shape which belongs to a Context."""
     def __new__(cls, shape, *args, **kwargs):
         if cls is ContextMember and shape.is_context_separator():
-            return ContextSeparator(shape.children, shape, shape.atlas, *args, **kwargs)
+            return Context(shape.children, shape, shape.atlas, *args, **kwargs)
         return super().__new__(cls)
 
     def __init__(self, shape, parent_contexts, _=None):
@@ -576,17 +580,19 @@ class ContextMember(object):
         return {parent.color: parent.children.get(self.color).difference({self}) for parent in self.parents}
 
 
-class ContextSeparator(ContextMember):
+@bp.assimilate
+class Context(ContextMember):
+    """Separate groups of shapes according to smallest surrounding shape. (hierarchy)"""
     def __new__(cls, shapes, shape, atlas, *args, **kwargs):
-        if cls is not ContextSeparator:
+        if cls is not Context:
             return super().__new__(cls, shape, *args, **kwargs)
         if shape in atlas.circles:
-            return CircleSeparator(shapes, shape, atlas, *args, **kwargs)
+            return CircleContext(shapes, shape, atlas, *args, **kwargs)
         elif shape in atlas.near_circles:
-            return RoundedSeparator(shapes, shape, atlas, *args, **kwargs)
+            return RoundContext(shapes, shape, atlas, *args, **kwargs)
         elif shape.box_is_square:
-            return SquareSeparator(shapes, shape, atlas, *args, **kwargs)
-        return RectangularSeparator(shapes, shape, atlas, *args, **kwargs)
+            return SquareContext(shapes, shape, atlas, *args, **kwargs)
+        return RectangleContext(shapes, shape, atlas, *args, **kwargs)
 
     def __init__(self, shapes, *args, sort_method=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -602,7 +608,8 @@ class ContextSeparator(ContextMember):
         print("Classifying {} by roundness.".format(self))
 
 
-class RoundedSeparator(ContextSeparator):
+@bp.assimilate
+class RoundContext(Context):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -614,12 +621,14 @@ class RoundedSeparator(ContextSeparator):
         print("Classifying {} by context.".format(self))
 
 
-class CircleSeparator(RoundedSeparator):
+@bp.assimilate
+class CircleContext(RoundContext):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
 
-class RectangularSeparator(ContextSeparator):
+@bp.assimilate
+class RectangleContext(Context):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -631,15 +640,18 @@ class RectangularSeparator(ContextSeparator):
         print("Classifying {} by context.".format(self))
 
 
-class SquareSeparator(RectangularSeparator):
+@bp.assimilate
+class SquareContext(RectangleContext):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
 
-class AbstractSeparator(object):
+@bp.assimilate
+class AbstractContext(object):
+    """Separate groups of shapes in a Context according to abstract relationships."""
     def __init__(self, atlas, parent, shapes):
         self.atlas = atlas
-        self.shapes = self.sort(parent, shapes) if self.__class__ is AbstractSeparator else shapes
+        self.shapes = self.sort(parent, shapes) if self.__class__ is AbstractContext else shapes
         self.parent = parent
 
     @classmethod
@@ -647,7 +659,8 @@ class AbstractSeparator(object):
         raise NotImplementedError("Sort method not possible for {} in base abstract separator {}.".format(shapes, cls))
 
 
-class Column(AbstractSeparator):
+@bp.assimilate
+class Column(AbstractContext):
     def __init__(self, *args, sort_method=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.rows = self.sort(self.parent, self.shapes) if sort_method is None else sort_method(self.parent,
@@ -659,8 +672,8 @@ class Column(AbstractSeparator):
         return Row(shapes)  # TODO
 
 
-class Row(AbstractSeparator):
-
+@bp.assimilate
+class Row(AbstractContext):
     def __init__(self, *args, sort_method=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.words = self.sort(self.parent, self.shapes) if sort_method is None else sort_method(self.parent,
@@ -672,7 +685,8 @@ class Row(AbstractSeparator):
         return [Word(shapes)]  # TODO
 
 
-class Word(AbstractSeparator):
+@bp.assimilate
+class Word(AbstractContext):
     def __new__(cls, atlas, parent, shapes, *args, sort_method=None, **kwargs):
         if cls is not Word:
             return super().__new__(cls)
@@ -714,6 +728,7 @@ class Word(AbstractSeparator):
         return self.read()
 
 
+@bp.assimilate
 class Measurement(Word):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -726,7 +741,7 @@ class Measurement(Word):
     @classmethod
     def segment(cls, shapes):
         print("Separating {} in {} into dictionaries by template.".format(shapes, cls))
-        return {"measurement": 0}
+        return {"measurement": [0]}  # TODO
 
     @classmethod
     def clarify(cls, shapes):
@@ -740,18 +755,20 @@ class Measurement(Word):
         return str(self.measurement) + "''" + super().read()  # TODO
 
 
+@bp.assimilate
 class Part(Word):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.count, self.number = None, None
         if self.__class__ is Part:
             self.semantic_segment_to_shapes = self.segment(self.shapes)
             self.extract()
+        else:
+            self.count, self.number = None, None
 
     @classmethod
     def segment(cls, shapes):
         print("Separating {} in {} into dictionaries by template.".format(shapes, cls))
-        return {"count": 1, "number": 00000}
+        return {"count": [1], "number": shapes, "detail": []}  # TODO
 
     @classmethod
     def clarify(cls, shapes):
@@ -766,11 +783,28 @@ class Part(Word):
         return str(self.number) + count + super().read()
 
 
+@bp.assimilate
+class SlotsPart(Part):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.__class__ is SlotsPart:
+            self.semantic_segment_to_shapes = self.segment(self.shapes)
+            self.extract()
+        else:
+            self.slots = 0
+
+    @classmethod
+    def segment(cls, shapes):
+        print("Separating {} in {} into dictionaries by template.".format(shapes, cls))
+        count = 1
+        return {"slots": [count], "number": shapes, "detail": [], "count": [count]}  # TODO
+
+
+@bp.assimilate
 class Augment(Part):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         if self.__class__ is Augment:
-            self.slots = 0
             self.semantic_segment_to_shapes = self.segment(self.shapes)
             self.extract()
 
@@ -778,9 +812,10 @@ class Augment(Part):
     def segment(cls, shapes):
         print("Separating {} in {} into dictionaries by template.".format(shapes, cls))
         slots = 2  # TODO
-        return {"slots": slots, "number": AUGMENT_SLOTS_TO_NUMBER.get(slots), "count": 1}
+        return {"slots": [slots], "number": [AUGMENT_SLOTS_TO_NUMBER.get(slots)], "count": [1]}
 
 
+@bp.assimilate
 class MeasuredPart(Part, Measurement):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -794,7 +829,25 @@ class MeasuredPart(Part, Measurement):
         return cls  # TODO
 
     def extract(self):
-        self.count, self.number = self.clarify(self.semantic_segment_to_shapes)
+        self.count, self.number, self.measurement = self.clarify(self.semantic_segment_to_shapes)
 
     def read(self):
         return super().read()
+
+
+@bp.assimilate
+class Wire(MeasuredPart):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+
+@bp.assimilate
+class Tubing(MeasuredPart):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+
+@bp.assimilate
+class Tape(MeasuredPart):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
