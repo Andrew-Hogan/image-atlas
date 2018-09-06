@@ -3,6 +3,10 @@ import calc_tools
 import atlas_tools as at
 
 
+SQUARE_DIMEDIFFERENCE_CUTOFF = 3  # I'm Square Dimmedifference, owner of the Square Context Separator! Eh, close enough.
+AUGMENT_SLOTS_TO_NUMBER = {2: 00000, 3: 11111}
+
+
 def resizeable(_wrapped_method, *, _=None):
 
     def resizeable_decorator(wrapped_method):
@@ -102,12 +106,12 @@ class Pixel(object):
 class Shape(object):
     """A continuous group of same-color Pixel objects representing a connected object."""
 
-    __slots__ = ['atlas', 'row', 'column', 'segment', 'inner', 'owned', 'roots', 'pixels', 'color',
+    __slots__ = ['atlas', 'row', 'column', 'segment', 'inner', 'children', 'parents', 'pixels', 'color',
                  '_coordinates', '_area', '_height', '_width', '_box']
 
     def __init__(self, init_pixels, atlas):
         """
-        Set reference to owned pixel objects responsible for creation and the source space reference.
+        Set reference to children pixel objects responsible for creation and the source space reference.
 
         :Parameters:
             :param Pixels ndarray or list init_pixels: The Pixels responsible for the creation of this object.
@@ -120,8 +124,8 @@ class Shape(object):
         self.column = None
         self.segment = None
         self.inner = set()
-        self.owned = set()
-        self.roots = {0: None, 1: None}
+        self.children = set()
+        self.parents = {0: None, 1: None}
         self._coordinates = None
         self._area = None
         self._height = None
@@ -151,7 +155,7 @@ class Shape(object):
         smallest_area = None
         for shape in shapes_pool:
             _, smallest_shape, smallest_area = self.compare_shape_context(shape, smallest_shape, smallest_area)
-        self.set_root(smallest_shape)
+        self.set_parent(smallest_shape)
 
     def compare_shape_context(self, shape, previous_smallest_shape, previous_smallest_area):
         inside_check = calc_tools.is_inside(*self.box, *shape.box)
@@ -166,13 +170,13 @@ class Shape(object):
                 previous_smallest_area = shape.area
         return inside_check, previous_smallest_shape, previous_smallest_area
 
-    def set_root(self, smallest_shape):
+    def set_parent(self, smallest_shape):
         if smallest_shape is not None:
-            old_root = self.roots.get(smallest_shape.color)
-            if old_root is not None:
-                old_root.pop(self)
+            old_parent = self.parents.get(smallest_shape.color)
+            if old_parent is not None:
+                old_parent.pop(self)
             smallest_shape.insert(self, 1)
-            self.roots.update({smallest_shape.color: smallest_shape})
+            self.parents.update({smallest_shape.color: smallest_shape})
 
     def set_shapes_context(self, *color_separated_shapes):
         for color_set in color_separated_shapes:
@@ -187,20 +191,20 @@ class Shape(object):
                 if not inside:
                     inside_check = calc_tools.is_inside(*shape.box, *self.box)
                     if inside_check:
-                        shape.compare_root(self)
-        self.set_root(smallest_shape)
+                        shape.comparent(self)
+        self.set_parent(smallest_shape)
 
-    def compare_root(self, new_root):
-        old_root = self.roots.get(new_root.color)
-        if old_root is not None:
-            if old_root.area > new_root.area:
-                self.set_root(new_root)
+    def comparent(self, new_parent):
+        old_parent = self.parents.get(new_parent.color)
+        if old_parent is not None:
+            if old_parent.area > new_parent.area:
+                self.set_parent(new_parent)
             else:
-                new_root.insert(self)
+                new_parent.insert(self)
         else:
-            self.set_root(new_root)
+            self.set_parent(new_parent)
 
-    def owned_of(self, color):
+    def children_of(self, color):
         return [shape for shape in self if shape.color == color]
 
     def inner_of(self, color):
@@ -318,7 +322,7 @@ class Shape(object):
         assert other is not None, "Cannot insert None into shape context."
         try:
             if depth == 1:
-                self.owned.add(other)
+                self.children.add(other)
             self.inner.add(other)
         except TypeError:
             for item in other:
@@ -332,9 +336,9 @@ class Shape(object):
         assert other is not None, "Cannot remove None from shape context."
         try:
             if depth == 1:
-                self.owned.discard(other)
+                self.children.discard(other)
             else:
-                self.owned.discard(other)
+                self.children.discard(other)
                 self.inner.add(other)
         except TypeError:
             for item in other:
@@ -360,9 +364,9 @@ class Shape(object):
     def recalculate_linked_contexts(self, context_object=None):
         if context_object is None:
             context_object = self.atlas
-        original_owned = self.owned.copy()
+        original_children = self.children.copy()
         context_object % self
-        tuple((shape @ context_object for shape in original_owned))
+        tuple((shape @ context_object for shape in original_children))
         print(len(self.pixels))
         if self:
             self @ context_object
@@ -411,6 +415,10 @@ class Shape(object):
     @width.deleter
     def width(self):
         self._width = None
+
+    @property
+    def box_is_square(self):
+        return abs(self.width - self.height) < SQUARE_DIMEDIFFERENCE_CUTOFF
 
     @property
     def area(self):
@@ -469,7 +477,7 @@ class Shape(object):
 
     def __contains__(self, item):
         if isinstance(item, type(self)):
-            return item in self.owned
+            return item in self.children
         elif isinstance(item, type(self.atlas.pixel_class)):
             return item in self.pixels
         raise TypeError(
@@ -482,10 +490,10 @@ class Shape(object):
         return bool(self.pixels)
 
     def __len__(self):
-        return len(self.owned)
+        return len(self.children)
 
     def __iter__(self):
-        return iter(self.owned)
+        return iter(self.children)
 
     def __mod__(self, other):
         return self.pop(other, 2)
@@ -545,9 +553,19 @@ class Shape(object):
 
 
 class ContextMember(object):
-    def __init__(self, shape, parent_contexts):
+    def __new__(cls, shape, *args, **kwargs):
+        if cls is ContextMember and shape.is_context_separator():
+            return ContextSeparator(shape.children, shape, shape.atlas, *args, **kwargs)
+        return super().__new__(cls)
+
+    def __init__(self, shape, parent_contexts, _=None):
         self.shape = shape
         self.parents = parent_contexts
+        if self.__class__ is ContextMember:
+            self.children = self.sort(None)
+
+    def sort(self, _):
+        return {0: set(), 1: set()}
 
     @property
     def color(self):
@@ -555,17 +573,30 @@ class ContextMember(object):
 
     @property
     def siblings(self):
-        return {parent.color: {sibling for sibling in parent.children.get(self.color) if sibling is not self}
-                for parent in self.parents}
+        return {parent.color: parent.children.get(self.color).difference({self}) for parent in self.parents}
 
 
 class ContextSeparator(ContextMember):
-    def __init__(self, shapes, sort_method, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.children = sort_method(shapes)
+    def __new__(cls, shapes, shape, atlas, *args, **kwargs):
+        if cls is not ContextSeparator:
+            return super().__new__(cls, shape, *args, **kwargs)
+        if shape in atlas.circles:
+            return CircleSeparator(shapes, shape, atlas, *args, **kwargs)
+        elif shape in atlas.near_circles:
+            return RoundedSeparator(shapes, shape, atlas, *args, **kwargs)
+        elif shape.box_is_square:
+            return SquareSeparator(shapes, shape, atlas, *args, **kwargs)
+        return RectangularSeparator(shapes, shape, atlas, *args, **kwargs)
 
-    def sort(self):
-        print("Sorting {} by lax col-row.".format(self))
+    def __init__(self, shapes, *args, sort_method=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        if sort_method is None:
+            sort_method = self.sort
+        self.children = sort_method(shapes) if sort_method is not None else self.sort(shapes)
+
+    def sort(self, shapes):
+        print("Sorting {} by lax col-row in {}.".format(shapes, self))
+        return {0: shapes.get(0).copy(), 1: shapes.get(1).copy()}
 
     def classify(self):
         print("Classifying {} by roundness.".format(self))
@@ -575,8 +606,9 @@ class RoundedSeparator(ContextSeparator):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def sort(self):
-        print("Sorting {} by strict col-row.".format(self))
+    def sort(self, shapes):
+        print("Sorting {} by strict col-row in {}.".format(shapes, self))
+        return {0: shapes.get(0).copy(), 1: shapes.get(1).copy()}
 
     def classify(self):
         print("Classifying {} by context.".format(self))
@@ -591,8 +623,9 @@ class RectangularSeparator(ContextSeparator):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def sort(self):
-        print("Sorting {} by strict col-row.".format(self))
+    def sort(self, shapes):
+        print("Sorting {} by strict col-row in {}.".format(shapes, self))
+        return {0: shapes.get(0).copy(), 1: shapes.get(1).copy()}
 
     def classify(self):
         print("Classifying {} by context.".format(self))
@@ -604,55 +637,164 @@ class SquareSeparator(RectangularSeparator):
 
 
 class AbstractSeparator(object):
-    def __init__(self, atlas, shapes):
+    def __init__(self, atlas, parent, shapes):
         self.atlas = atlas
-        self.shapes = shapes
+        self.shapes = self.sort(parent, shapes) if self.__class__ is AbstractSeparator else shapes
+        self.parent = parent
 
-    def sort(self):
-        raise NotImplementedError("Sort method not possible for base abstract separator {}.".format(self))
+    @classmethod
+    def sort(cls, parent, shapes):
+        raise NotImplementedError("Sort method not possible for {} in base abstract separator {}.".format(shapes, cls))
 
 
 class Column(AbstractSeparator):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, sort_method=None, **kwargs):
         super().__init__(*args, **kwargs)
+        self.rows = self.sort(self.parent, self.shapes) if sort_method is None else sort_method(self.parent,
+                                                                                                self.shapes)
 
-    def sort(self):
-        print("Sorting {} by row.".format(self))
+    @classmethod
+    def sort(cls, parent, shapes):
+        print("Sorting {} in {} by row.".format(shapes, cls))
+        return Row(shapes)  # TODO
 
 
 class Row(AbstractSeparator):
+
+    def __init__(self, *args, sort_method=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.words = self.sort(self.parent, self.shapes) if sort_method is None else sort_method(self.parent,
+                                                                                                 self.shapes)
+
+    @classmethod
+    def sort(cls, parent, shapes):
+        print("Sorting {} in {} by horizontal location.".format(shapes, cls))
+        return [Word(shapes)]  # TODO
+
+
+class Word(AbstractSeparator):
+    def __new__(cls, atlas, parent, shapes, *args, sort_method=None, **kwargs):
+        if cls is not Word:
+            return super().__new__(cls)
+        organized_shapes = cls.sort(parent, shapes) if sort_method is None else sort_method(parent, shapes)
+        return cls.classify(atlas, organized_shapes)
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.shapes = self.sort(self.parent, self.shapes)
+        if self.__class__ is Word:
+            self.semantic_segment_to_shapes = self.segment(self.shapes)
 
-    def sort(self):
-        print("Sorting {} by horizontal location.".format(self))
+    @classmethod
+    def classify(cls, atlas, shapes):
+        print("Classifying {} in {} by content and context.".format(shapes, cls))
+        return Part(atlas, shapes)
 
+    @classmethod
+    def sort(cls, parent, shapes):
+        print("Sorting {} in {} by horizontal location.".format(shapes, cls))
+        return list(shapes)  # TODO
 
-class Word(Row):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    @classmethod
+    def segment(cls, shapes):
+        print("Separating {} in {} into dictionaries by template.".format(shapes, cls))
+        return {"count": 1, "number": 00000}
 
-    def classify(self):
-        print("Classifying {} by content and context.".format(self))
+    @classmethod
+    def clarify(cls, shapes):
+        raise NotImplementedError
+
+    def read(self):
+        return ''
+
+    def extract(self):
+        raise NotImplementedError
+
+    def __call__(self):
+        return self.read()
 
 
 class Measurement(Word):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.total_length = None
+        self.length = 0
+        self.measurement = None
+        if self.__class__ is Measurement:
+            self.semantic_segment_to_shapes = self.segment(self.shapes)
+            self.extract()
 
-    def clarify(self):
-        print("Determining most likely reading for {}.".format(self))
+    @classmethod
+    def segment(cls, shapes):
+        print("Separating {} in {} into dictionaries by template.".format(shapes, cls))
+        return {"measurement": 0}
+
+    @classmethod
+    def clarify(cls, shapes):
+        print("Determining most likely reading for {}.".format(cls))
+        return cls  # TODO
+
+    def extract(self):
+        self.measurement = self.clarify(self.semantic_segment_to_shapes)
+
+    def read(self):
+        return str(self.measurement) + "''" + super().read()  # TODO
 
 
 class Part(Word):
-    def __init__(self, part_number, part_count, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.number = part_number
-        self.count = part_count
+        self.count, self.number = None, None
+        if self.__class__ is Part:
+            self.semantic_segment_to_shapes = self.segment(self.shapes)
+            self.extract()
+
+    @classmethod
+    def segment(cls, shapes):
+        print("Separating {} in {} into dictionaries by template.".format(shapes, cls))
+        return {"count": 1, "number": 00000}
+
+    @classmethod
+    def clarify(cls, shapes):
+        print("Determining most likely reading for {}.".format(cls))
+        return cls  # TODO
+
+    def extract(self):
+        self.count, self.number = self.clarify(self.semantic_segment_to_shapes)
+
+    def read(self):
+        count = self.count if self.count not in {1, 0, None} else ''  # TODO
+        return str(self.number) + count + super().read()
 
 
-class MeasuredPart(Part):
-    def __init__(self, part_number, *args, **kwargs):
+class Augment(Part):
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.part_number = part_number
+        if self.__class__ is Augment:
+            self.slots = 0
+            self.semantic_segment_to_shapes = self.segment(self.shapes)
+            self.extract()
+
+    @classmethod
+    def segment(cls, shapes):
+        print("Separating {} in {} into dictionaries by template.".format(shapes, cls))
+        slots = 2  # TODO
+        return {"slots": slots, "number": AUGMENT_SLOTS_TO_NUMBER.get(slots), "count": 1}
+
+
+class MeasuredPart(Part, Measurement):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.__class__ is MeasuredPart:
+            self.semantic_segment_to_shapes = self.segment(self.shapes)
+            self.extract()
+
+    @classmethod
+    def clarify(cls, shapes):
+        print("Determining most likely reading for {}.".format(cls))
+        return cls  # TODO
+
+    def extract(self):
+        self.count, self.number = self.clarify(self.semantic_segment_to_shapes)
+
+    def read(self):
+        return super().read()

@@ -15,6 +15,7 @@ RESEGMENTABLES = {CIRCLE_RESEGMENT: True, SQUARE_RESEGMENT: True, TEXT_RESEGMENT
 MIN_CIRCLE_PIXELS = 30
 RADIUS_TOLERANCE = (0.75, 1.25)
 EDGE_SHAPE_DISTANCE_CUTOFF = 5
+MAX_CIRCLE_PIXEL_MODIFIED_DEVIATION = .075
 
 
 class Lens(object):
@@ -53,14 +54,18 @@ class Morphologist(object):
         circles = {}
         first_pass_filtered = set()
         for shape in owning_shape.owned_of(color_key):
-            first_pass_circle_check(shape, circles, first_pass_filtered)
+            is_circle, pixel_radii, pixel_deviation = first_pass_circle_check(shape)
+            if is_circle:
+                circles.update({shape: {RADIUS_KEY: pixel_radii, DEVIATION_KEY: pixel_deviation}})
+            else:
+                first_pass_filtered.add(shape)
         if not circles:
             return {}, set()
         self.circle_average_radius = np.average([stat_dict.get(RADIUS_KEY) for stat_dict in circles.values()])
         self.circle_average_deviation = np.average([stat_dict.get(DEVIATION_KEY) for stat_dict in circles.values()])
         if not self.resegment_dict.get(CIRCLE_RESEGMENT):
             return circles, set()
-        self.resegment_from_circles(circles, first_pass_filtered, color_key, *args, **kwargs)
+        self.resegment_from_circles(circles, first_pass_filtered, *args, **kwargs)
 
     def resegment_from_circles(self, circles, potential_circles, inner_shape_color_key,
                                minimum_pixels=MIN_CIRCLE_PIXELS,
@@ -69,33 +74,56 @@ class Morphologist(object):
         maximum_radius = radii_range[1] * (self.circle_average_radius + self.circle_average_deviation)
         for shape in potential_circles:
             for owned_shape in shape.owned_of(inner_shape_color_key):
-                is_circular, maximum_distance = are_edge_distances_circle(owned_shape.distances_from_center)
-                if is_circular and minimum_radius <= maximum_distance <= maximum_radius:
+                is_circle = second_pass_circle_check(owned_shape, minimum_radius, maximum_radius)
+                if is_circle:
                     pass  # This meatball is being extracted from some spaghetti. Please excuse the mess.
 
     def __call__(self, *args, **kwargs):
         return self.find_circles_in(*args, **kwargs)
 
 
-def first_pass_circle_check(shape, circles, filtered):
+def first_pass_circle_check(shape):
     if shape.owned_of(0) and shape.owned_of(1):
-        is_circle, pixel_radii, pixel_deviation = inspect_as_circle(shape.pixels)
-        if is_circle:
-            circles.update({shape: {RADIUS_KEY: pixel_radii, DEVIATION_KEY: pixel_deviation}})
-        else:
-            filtered.add(shape)
+        is_circle, pixel_radii, pixel_deviation = inspect_as_circle(shape.pixels, shape.coordinates)
+        return is_circle, pixel_radii, pixel_deviation
+    return False, 0, 0
 
 
-def inspect_as_circle(pixels):
-    return is_shape_circle(pixels), circle_statistics(pixels), 1
+def inspect_as_circle(pixels, center_coordinates, max_modified_deviation=MAX_CIRCLE_PIXEL_MODIFIED_DEVIATION):
+    pixel_radii, pixel_deviation = circle_statistics(pixels, center_coordinates)
+    if pixel_radii:
+        is_circle = is_shape_circle(pixel_radii, pixel_deviation, max_modified_deviation)
+        return is_circle, pixel_radii, pixel_deviation
+    return False, pixel_radii, pixel_deviation
 
 
-def circle_statistics(pixels):
-    return 1, 2
+def circle_statistics(pixels, center_coordinates):
+    distances = pixel_distances_from_point(pixels, center_coordinates)
+    if not distances:
+        return 0, 0
+    distances = np.array(distances)
+    deviation = np.std(distances)
+    average_distance = np.average(distances)
+    return average_distance, deviation
 
 
-def is_shape_circle(pixels, ):
-    return True
+def pixel_distances_from_point(pixels, coordinates):
+    return [calc_tools.find_distance(pixel.coordinates, coordinates) for pixel in pixels]
+
+
+def is_shape_circle(pixel_average_distance, pixel_deviation, max_modified_deviation):
+    modified_deviation = pixel_deviation / pixel_average_distance
+    if modified_deviation < max_modified_deviation:
+        return True
+    return False
+
+
+def second_pass_circle_check(shape, minimum_radius, maximum_radius):
+    distances = pixel_distances_from_point(shape.pixels, shape.coordinates)
+    is_circular, maximum_distance = are_edge_distances_circle(distances)
+    if is_circular and minimum_radius <= maximum_distance <= maximum_radius:
+        return True
+    return False
 
 
 def are_edge_distances_circle(center_distances, edge_cutoff=EDGE_SHAPE_DISTANCE_CUTOFF):
@@ -108,3 +136,9 @@ def are_edge_distances_circle(center_distances, edge_cutoff=EDGE_SHAPE_DISTANCE_
     if number_past_cutoff > (distance_cutoff * math.pi * edge_cutoff):
         return True, max_pixel_distance
     return False, max_pixel_distance
+
+def circle_subtraction(shape_pixels, center, average_radius, average_deviation, bounding_deviation_multiplier=2):
+    maximum_distance = average_radius + abs(bounding_deviation_multiplier * average_deviation)
+    minimum_distance = average_radius - abs(bounding_deviation_multiplier * average_deviation)
+
+    pixels,
